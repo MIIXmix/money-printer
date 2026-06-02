@@ -162,6 +162,12 @@ button {
   list-style: none;
 }
 
+.search-dropdown li.search-loading {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .search-dropdown button {
   display: flex;
   justify-content: space-between;

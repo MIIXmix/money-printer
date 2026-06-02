@@ -43,9 +43,29 @@ from .services.news import get_news
 from .services.portfolio import list_holdings, portfolio_summary
 
 
+def _warm_korea_universe() -> None:
+    """Pre-load the KOSPI/KOSDAQ universe so the first Korean company-name search
+    is instant. Cold load scrapes Naver (~20s); doing it in the background at
+    startup and refreshing before the 30-min cache expires keeps search snappy."""
+    import time as _time
+
+    from .services.market_data import korea_universe
+
+    while True:
+        for market in ("KOSPI", "KOSDAQ"):
+            try:
+                korea_universe(market, limit=1)
+            except Exception:
+                pass
+        _time.sleep(25 * 60)  # refresh before the 30-min universe cache expires
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    import threading
+
+    threading.Thread(target=_warm_korea_universe, daemon=True).start()
     yield
 
 
@@ -542,5 +562,7 @@ def serve_frontend(full_path: str) -> FileResponse:
             return FileResponse(target)
     index = _static_index()
     if index.exists():
-        return FileResponse(index)
+        # index.html points to hash-named bundles; never cache it so the browser
+        # always picks up the latest build (hashed assets stay long-cacheable).
+        return FileResponse(index, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
     raise HTTPException(status_code=404, detail="frontend_not_built")

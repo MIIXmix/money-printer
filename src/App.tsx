@@ -271,6 +271,7 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
   const [command, setCommand] = useState('AAPL')
   const [searchResults, setSearchResults] = useState<Array<{ symbol: string; name: string; exchange: string; type: string }>>([])
   const [searchOpen, setSearchOpen] = useState(false)
+  const [searchLoading, setSearchLoading] = useState(false)
   const [period, setPeriod] = useState('1Y')
   const [chartInterval, setChartInterval] = useState('1D')
   const [layout, setLayout] = useState<LayoutState>(() => loadLocalLayout())
@@ -442,14 +443,18 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
     const q = command.trim()
     if (!q) {
       setSearchResults([])
+      setSearchLoading(false)
       return
     }
+    let active = true
+    setSearchLoading(true)
     const handle = setTimeout(() => {
       void apiFetch(`/api/market/search?q=${encodeURIComponent(q)}`)
-        .then((data) => setSearchResults(data.results || []))
-        .catch(() => setSearchResults([]))
+        .then((data) => { if (active) setSearchResults(data.results || []) })
+        .catch(() => { if (active) setSearchResults([]) })
+        .finally(() => { if (active) setSearchLoading(false) })
     }, 250)
-    return () => clearTimeout(handle)
+    return () => { active = false; clearTimeout(handle) }
   }, [command])
 
   useEffect(() => {
@@ -713,8 +718,11 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
             onBlur={() => window.setTimeout(() => setSearchOpen(false), 150)}
             placeholder="회사명/티커 검색: 삼성전자, 카카오, Apple, AAPL"
           />
-          {searchOpen && searchResults.length > 0 && (
+          {searchOpen && command.trim() && (searchLoading || searchResults.length > 0) && (
             <ul className="search-dropdown">
+              {searchLoading && searchResults.length === 0 && (
+                <li className="search-loading">검색 중…</li>
+              )}
               {searchResults.map((result) => (
                 <li key={result.symbol}>
                   <button
