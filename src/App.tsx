@@ -257,7 +257,7 @@ const widgetTitles: Record<string, { title: string; icon: ReactNode }> = {
   dataStatus: { title: 'DATA PROVIDER STATUS', icon: <Database size={14} /> },
   chartControls: { title: 'CHART CONTROLS', icon: <Settings size={14} /> },
   indicatorStack: { title: 'RSI / MACD DETAIL', icon: <Activity size={14} /> },
-  portfolioControls: { title: 'PORTFOLIO INPUT', icon: <WalletCards size={14} /> },
+  portfolioControls: { title: '보유 · 매수 입력', icon: <WalletCards size={14} /> },
   portfolio: { title: 'PORTFOLIO', icon: <WalletCards size={14} /> },
   portfolioRisk: { title: 'PORTFOLIO RISK', icon: <ShieldAlert size={14} /> },
   optionsFlow: { title: 'OPTIONS FLOW INTELLIGENCE', icon: <Activity size={14} /> },
@@ -1512,30 +1512,28 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
     setSearchOpen(false)
   }
 
-  const addHolding = async (event: FormEvent) => {
-    event.preventDefault()
+  // 공통: 티커 정규화 + 수량 검증. 실패 시 null + 메시지.
+  const prepare = (): { normalized: string; qty: number; cfg: (typeof MARKET_OPTIONS)[keyof typeof MARKET_OPTIONS] } | null => {
     if (!token) {
       setMessage('먼저 로그인하세요')
-      return
+      return null
     }
     const cfg = MARKET_OPTIONS[marketKey]
     let normalized = symbol.trim().toUpperCase()
     if (!normalized) {
       setMessage('티커/종목코드를 입력하세요')
-      return
+      return null
     }
-    // 6자리 한국 코드면 시장 접미사 자동 부착
     if (/^\d{6}$/.test(normalized) && cfg.suffix) normalized = `${normalized}${cfg.suffix}`
     const qty = Number(quantity)
-    const avg = Number(averageCost)
     if (!qty || qty <= 0) {
       setMessage('수량을 1 이상으로 입력하세요')
-      return
+      return null
     }
-    if (!avg || avg <= 0) {
-      setMessage('평균 매입가를 입력하세요')
-      return
-    }
+    return { normalized, qty, cfg }
+  }
+
+  const submitHolding = async (normalized: string, qty: number, avg: number, cfg: (typeof MARKET_OPTIONS)[keyof typeof MARKET_OPTIONS], note: string) => {
     setBusy(true)
     setSearchOpen(false)
     setResults([])
@@ -1543,21 +1541,49 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
       const res = await apiFetch('/api/portfolio/holdings', {
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol: normalized,
-          quantity: qty,
-          average_cost: avg,
-          currency: cfg.currency,
-          market: cfg.market,
-        }),
+        body: JSON.stringify({ symbol: normalized, quantity: qty, average_cost: avg, currency: cfg.currency, market: cfg.market }),
       })
-      setMessage(res?.status === 'merged' ? `${normalized} 기존 보유에 합산됨 (평단 재계산)` : `${normalized} ${qty}주 저장됨`)
+      const merged = res?.status === 'merged'
+      setMessage(merged ? `${normalized} 기존 보유에 합산됨 (평단 재계산)` : `${normalized} ${qty}주 ${note}`)
       setQuantity('1')
       setAverageCost('')
       await loadPortfolio()
     } catch (err: any) {
       setMessage(`저장 실패: ${err?.message || '오류'}`)
     } finally {
+      setBusy(false)
+    }
+  }
+
+  // 평단 직접 입력으로 기록 (이미 보유한 종목)
+  const addManual = async (event: FormEvent) => {
+    event.preventDefault()
+    const p = prepare()
+    if (!p) return
+    const avg = Number(averageCost)
+    if (!avg || avg <= 0) {
+      setMessage('평균 매입가를 입력하거나 ‘현재가로 담기’를 누르세요')
+      return
+    }
+    await submitHolding(p.normalized, p.qty, avg, p.cfg, '기록됨 (평단 직접)')
+  }
+
+  // 현재가로 담기 — 실시간 시세를 평단으로 (지금 매수처럼)
+  const addAtMarket = async () => {
+    const p = prepare()
+    if (!p) return
+    setBusy(true)
+    try {
+      const data = await apiFetch(`/api/market/quotes?symbols=${encodeURIComponent(p.normalized)}`)
+      const price = data?.quotes?.[0]?.price
+      if (price == null) {
+        setMessage(`${p.normalized} 현재가를 불러오지 못했습니다 (티커 확인)`)
+        setBusy(false)
+        return
+      }
+      await submitHolding(p.normalized, p.qty, Number(price), p.cfg, `현재가로 담음 (${formatMoney(price, p.cfg.currency)})`)
+    } catch (err: any) {
+      setMessage(`현재가 조회 실패: ${err?.message || '오류'}`)
       setBusy(false)
     }
   }
@@ -1614,7 +1640,7 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
 
   return (
     <div className="portfolio-controls">
-      <form onSubmit={addHolding} className="holding-form">
+      <form onSubmit={addManual} className="holding-form">
         <label>시장
           <select value={marketKey} onChange={(event) => setMarketKey(event.target.value as any)}>
             <option value="US">미국 (USD)</option>
@@ -1647,11 +1673,18 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
         <label>수량 (주)
           <input value={quantity} onChange={(event) => setQuantity(event.target.value)} inputMode="decimal" placeholder="보유 주식 수" />
         </label>
-        <label>평균 매입가 ({cfg.currency})
-          <input value={averageCost} onChange={(event) => setAverageCost(event.target.value)} inputMode="decimal" placeholder="1주당 산 가격" />
-        </label>
-        <button className="primary" type="submit" disabled={busy}>{busy ? '저장 중…' : '보유 종목 추가'}</button>
-        <small className="form-help">평균 매입가 = 그 종목을 1주당 평균 얼마에 샀는지. 모르면 매수 화면의 ‘평단가’를 입력하세요.</small>
+        <button type="button" className="primary" disabled={busy} onClick={addAtMarket}>
+          {busy ? '처리 중…' : '현재가로 담기'}
+        </button>
+        <small className="form-help">지금 시세로 담습니다(평단=현재가). 처음 사는 종목은 이 버튼.</small>
+        <details className="pf-manual">
+          <summary>이미 보유한 종목 직접 기록 (평단 입력)</summary>
+          <label>평균 매입가 ({cfg.currency})
+            <input value={averageCost} onChange={(event) => setAverageCost(event.target.value)} inputMode="decimal" placeholder="1주당 평균 산 가격" />
+          </label>
+          <button className="secondary-btn" type="submit" disabled={busy}>{busy ? '저장 중…' : '평단으로 기록'}</button>
+          <small className="form-help">과거에 산 종목 기록용. 평균 매입가 = 1주당 평균 얼마에 샀는지.</small>
+        </details>
       </form>
       {holdings.length > 0 && (
         <div className="holding-edit">

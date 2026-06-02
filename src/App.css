@@ -1268,6 +1268,37 @@ input {
   line-height: 1.45;
 }
 
+.pf-manual {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 6px;
+  display: grid;
+  gap: 7px;
+}
+
+.pf-manual summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  list-style: revert;
+}
+
+.pf-manual summary:hover {
+  color: var(--text);
+}
+
+.secondary-btn {
+  border: 1px solid var(--line);
+  background: #0b1014;
+  color: var(--text);
+  min-height: 30px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.secondary-btn:hover {
+  border-color: var(--cyan);
+}
+
 .form-msg {
   color: var(--cyan);
   font-size: 11px;
