@@ -1459,7 +1459,7 @@ const MARKET_OPTIONS: Record<string, { suffix: string; currency: 'KRW' | 'USD'; 
   KOSDAQ: { suffix: '.KQ', currency: 'KRW', market: 'KR', label: '코스닥' },
 }
 
-function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any) {
+function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio, setSelectedSymbol, setActiveTab }: any) {
   const [symbol, setSymbol] = useState('AAPL')
   const [quantity, setQuantity] = useState('1')
   const [averageCost, setAverageCost] = useState('')
@@ -1473,6 +1473,38 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
   const [editId, setEditId] = useState<number | null>(null)
   const [editQty, setEditQty] = useState('')
   const [editAvg, setEditAvg] = useState('')
+  // A. 현재가 미리보기
+  const [preview, setPreview] = useState<{ price: number; currency: string } | null>(null)
+  // C. 부분 매도
+  const [sellId, setSellId] = useState<number | null>(null)
+  const [sellQty, setSellQty] = useState('')
+
+  // 순수: 입력 심볼 + 시장 → 정규화된 티커 (부수효과 없음)
+  const normalizeSymbol = (raw: string, mk: 'US' | 'KOSPI' | 'KOSDAQ'): string => {
+    let s = raw.trim().toUpperCase()
+    const suffix = MARKET_OPTIONS[mk].suffix
+    if (/^\d{6}$/.test(s) && suffix) s = `${s}${suffix}`
+    return s
+  }
+
+  // A. 종목/시장 바뀌면 현재가 미리보기 (디바운스)
+  useEffect(() => {
+    const norm = normalizeSymbol(symbol, marketKey)
+    if (!norm) {
+      setPreview(null)
+      return
+    }
+    let alive = true
+    const handle = setTimeout(() => {
+      void apiFetch(`/api/market/quotes?symbols=${encodeURIComponent(norm)}`)
+        .then((data) => {
+          const q = data?.quotes?.[0]
+          if (alive) setPreview(q?.price != null ? { price: Number(q.price), currency: q.currency || MARKET_OPTIONS[marketKey].currency } : null)
+        })
+        .catch(() => { if (alive) setPreview(null) })
+    }, 350)
+    return () => { alive = false; clearTimeout(handle) }
+  }, [symbol, marketKey])
 
   const inferMarket = (sym: string) => {
     if (sym.endsWith('.KS')) setMarketKey('KOSPI')
@@ -1599,9 +1631,53 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
   }
 
   const startEdit = (h: any) => {
+    setSellId(null)
     setEditId(h.id)
     setEditQty(String(h.quantity))
     setEditAvg(String(h.average_cost))
+  }
+
+  // C. 부분 매도 — 수량만큼 줄임. 전부 팔면 삭제.
+  const startSell = (h: any) => {
+    setEditId(null)
+    setSellId(h.id)
+    setSellQty('')
+  }
+
+  const confirmSell = async (h: any) => {
+    const sell = Number(sellQty)
+    if (!sell || sell <= 0) {
+      setMessage('매도 수량을 입력하세요')
+      return
+    }
+    const remain = Number(h.quantity) - sell
+    try {
+      if (remain <= 0) {
+        await apiFetch(`/api/portfolio/holdings/${h.id}`, { method: 'DELETE', headers: authHeaders })
+        setMessage(`${h.symbol} 전량 매도 (삭제)`)
+      } else {
+        await apiFetch(`/api/portfolio/holdings/${h.id}`, {
+          method: 'PUT',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol: h.symbol, name: h.name ?? null, quantity: remain, average_cost: h.average_cost,
+            currency: h.currency || 'USD', market: h.market || 'US',
+            sector: h.sector ?? null, country: h.country ?? null, target_weight: h.target_weight ?? null,
+          }),
+        })
+        setMessage(`${h.symbol} ${sell}주 매도 (${remain}주 남음)`)
+      }
+      setSellId(null)
+      await loadPortfolio()
+    } catch (err: any) {
+      setMessage(`매도 실패: ${err?.message || '오류'}`)
+    }
+  }
+
+  // B. 보유 종목 → 차트 탭으로
+  const openChart = (sym: string) => {
+    setSelectedSymbol?.(sym)
+    setActiveTab?.('chart')
   }
 
   const saveEdit = async (h: any) => {
@@ -1673,6 +1749,12 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
         <label>수량 (주)
           <input value={quantity} onChange={(event) => setQuantity(event.target.value)} inputMode="decimal" placeholder="보유 주식 수" />
         </label>
+        {preview && (
+          <div className="pf-preview">
+            현재가 <strong>{formatMoney(preview.price, preview.currency)}</strong>
+            {Number(quantity) > 0 && <> · {Number(quantity)}주 ≈ <strong>{formatMoney(preview.price * Number(quantity), preview.currency)}</strong></>}
+          </div>
+        )}
         <button type="button" className="primary" disabled={busy} onClick={addAtMarket}>
           {busy ? '처리 중…' : '현재가로 담기'}
         </button>
@@ -1688,7 +1770,7 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
       </form>
       {holdings.length > 0 && (
         <div className="holding-edit">
-          <div className="holding-edit-head">보유 종목 ({holdings.length}) · 수량/평단 클릭 수정</div>
+          <div className="holding-edit-head">보유 종목 ({holdings.length}) · 종목명 클릭=차트</div>
           {holdings.map((h) =>
             editId === h.id ? (
               <div className="holding-edit-row editing" key={h.id}>
@@ -1698,10 +1780,18 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
                 <button type="button" className="he-ok" title="저장" onClick={() => saveEdit(h)}><Check size={12} /></button>
                 <button type="button" className="he-cancel" title="취소" onClick={() => setEditId(null)}><X size={12} /></button>
               </div>
+            ) : sellId === h.id ? (
+              <div className="holding-edit-row editing" key={h.id}>
+                <span className="he-sym">{h.symbol}</span>
+                <input className="he-input" value={sellQty} onChange={(e) => setSellQty(e.target.value)} inputMode="decimal" placeholder={`매도(최대 ${formatNumber(h.quantity)})`} title="매도 수량" />
+                <button type="button" className="he-ok" title="매도 확인" onClick={() => confirmSell(h)}><Check size={12} /></button>
+                <button type="button" className="he-cancel" title="취소" onClick={() => setSellId(null)}><X size={12} /></button>
+              </div>
             ) : (
               <div className="holding-edit-row" key={h.id}>
-                <span className="he-sym">{h.symbol}</span>
+                <button type="button" className="he-sym he-sym-link" title="차트 보기" onClick={() => openChart(h.symbol)}>{h.symbol}</button>
                 <span className="he-qty">{formatNumber(h.quantity)}주 · 평단 {formatNumber(h.average_cost)}</span>
+                <button type="button" className="he-sell" title="매도" onClick={() => startSell(h)}>매도</button>
                 <button type="button" className="he-edit" title="수정" onClick={() => startEdit(h)}><Pencil size={12} /></button>
                 <button type="button" className="he-del" title="삭제" onClick={() => removeHolding(h.id, h.symbol)}><Trash2 size={12} /></button>
               </div>
@@ -1714,7 +1804,8 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio }: any
   )
 }
 
-function PortfolioPanel({ portfolio, setPortfolioFocus }: any) {
+function PortfolioPanel({ portfolio, setPortfolioFocus, setSelectedSymbol, setActiveTab, loadPortfolio }: any) {
+  const openChart = (sym: string) => { setSelectedSymbol?.(sym); setActiveTab?.('chart') }
   if (!portfolio) {
     return <EmptyState text="로그인하면 포트폴리오 비중·수익률을 한눈에 볼 수 있어요. 왼쪽에서 시작하세요." />
   }
@@ -1736,6 +1827,7 @@ function PortfolioPanel({ portfolio, setPortfolioFocus }: any) {
         <Metric label="총 평가금액" value={formatMoney(totals.marketValue, base)} />
         <Metric label="총 손익" value={formatMoney(totals.pnl, base)} tone={up ? 'up' : 'down'} />
         <Metric label="총 수익률" value={totals.pnlPercent == null ? '데이터 없음' : formatPercent(totals.pnlPercent)} tone={up ? 'up' : 'down'} />
+        <button className="icon-button" type="button" title="시세 새로고침" onClick={() => loadPortfolio?.()}><RefreshCw size={14} /></button>
         <button className="icon-button" type="button" title="크게 보기" onClick={() => setPortfolioFocus(true)}><Maximize2 size={14} /></button>
       </div>
       <div className="pf-note">
@@ -1754,8 +1846,8 @@ function PortfolioPanel({ portfolio, setPortfolioFocus }: any) {
           const cur = (h.currency || base).toUpperCase()
           const gain = (h.pnlPercent ?? 0) >= 0
           return (
-            <div className="table-row" key={h.id}>
-              <span className="h-sym" title={h.name || h.symbol}>{h.symbol}</span>
+            <div className="table-row table-row-click" key={h.id} role="button" tabIndex={0} title="차트 보기" onClick={() => openChart(h.symbol)}>
+              <span className="h-sym">{h.symbol}</span>
               <span>{formatNumber(h.quantity)}</span>
               <span>{formatMoney(h.average_cost, cur)}</span>
               <span>{h.currentPrice == null ? '–' : formatMoney(h.currentPrice, cur)}</span>

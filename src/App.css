@@ -1299,6 +1299,63 @@ input {
   border-color: var(--cyan);
 }
 
+.pf-preview {
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 5px 8px;
+}
+
+.pf-preview strong {
+  color: var(--text);
+}
+
+.he-sym-link {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  min-width: 64px;
+}
+
+.he-sym-link:hover {
+  color: var(--cyan);
+  text-decoration: underline;
+}
+
+.he-sell {
+  border: 1px solid var(--line);
+  background: #0b1014;
+  color: var(--amber);
+  border-radius: 4px;
+  height: 22px;
+  padding: 0 7px;
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.he-sell:hover {
+  border-color: var(--amber);
+}
+
+.holdings-table .table-row-click {
+  cursor: pointer;
+}
+
+.holdings-table .table-row-click:hover {
+  background: var(--panel-2);
+}
+
+.holdings-table .table-row-click .h-sym {
+  color: var(--cyan);
+}
+
 .form-msg {
   color: var(--cyan);
   font-size: 11px;
