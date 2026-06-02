@@ -71,7 +71,7 @@ _CHART_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
 
 NASDAQ100_PATH = PROJECT_ROOT / "data" / "nasdaq100_sectors.csv"
 KOSPI_SECTORS_PATH = PROJECT_ROOT / "data" / "kospi_sectors.csv"
-HEATMAP_CACHE_TTL = timedelta(seconds=60)
+HEATMAP_CACHE_TTL = timedelta(minutes=30)
 _HEATMAP_CACHE: dict[str, tuple[datetime, dict[str, Any]]] = {}
 
 

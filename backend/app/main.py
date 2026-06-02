@@ -44,13 +44,14 @@ from .services.news import get_news
 from .services.portfolio import list_holdings, portfolio_summary
 
 
-def _warm_korea_universe() -> None:
-    """Pre-load the KOSPI/KOSDAQ universe so the first Korean company-name search
-    is instant. Cold load scrapes Naver (~20s); doing it in the background at
-    startup and refreshing before the 30-min cache expires keeps search snappy."""
+def _warm_caches() -> None:
+    """Pre-load slow caches in the background so first use is instant:
+    - KOSPI/KOSDAQ universe (Korean company-name search; cold ~20s)
+    - Sector heatmaps (KOSPI/NASDAQ100; cold ~10-15s each)
+    Refreshes every 25 min, before the 30-min caches expire."""
     import time as _time
 
-    from .services.market_data import korea_universe
+    from .services.market_data import korea_universe, market_heatmap
 
     while True:
         for market in ("KOSPI", "KOSDAQ"):
@@ -58,7 +59,12 @@ def _warm_korea_universe() -> None:
                 korea_universe(market, limit=1)
             except Exception:
                 pass
-        _time.sleep(25 * 60)  # refresh before the 30-min universe cache expires
+        for hm in ("KOSPI", "NASDAQ100"):
+            try:
+                market_heatmap(hm)
+            except Exception:
+                pass
+        _time.sleep(25 * 60)  # refresh before the 30-min caches expire
 
 
 @asynccontextmanager
@@ -66,7 +72,7 @@ async def lifespan(_: FastAPI):
     init_db()
     import threading
 
-    threading.Thread(target=_warm_korea_universe, daemon=True).start()
+    threading.Thread(target=_warm_caches, daemon=True).start()
     yield
 
 
