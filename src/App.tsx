@@ -2352,11 +2352,12 @@ function App() {
         return
       }
       try {
-        const onboarding = await apiFetch('/api/settings/onboarding', {
+        // Gemini + DART 키는 필수 — 둘 다 설정돼야 진입. config-status가 토큰 검증도 겸함.
+        const cfg = await apiFetch('/api/config-status', {
           headers: { Authorization: `Bearer ${existing}` },
         })
         if (cancelled) return
-        setNeedsOnboarding(onboarding?.value?.done !== true)
+        setNeedsOnboarding(!(cfg?.geminiConfigured && cfg?.dartConfigured))
         setPhase('ready')
       } catch {
         if (cancelled) return
@@ -2394,18 +2395,14 @@ function App() {
     return (
       <AuthGate
         initialized={initialized}
-        onAuthed={(tok, isFirst) => {
+        onAuthed={(tok) => {
           localStorage.setItem('kft_token', tok)
           setToken(tok)
           setPhase('ready')
-          if (isFirst) {
-            setNeedsOnboarding(true)
-          } else {
-            // returning unlock: resurface onboarding only if never completed
-            apiFetch('/api/settings/onboarding', { headers: { Authorization: `Bearer ${tok}` } })
-              .then((res) => setNeedsOnboarding(res?.value?.done !== true))
-              .catch(() => setNeedsOnboarding(false))
-          }
+          // 진입 전 Gemini+DART 키 필수 — 둘 다 없으면 온보딩 강제
+          apiFetch('/api/config-status', { headers: { Authorization: `Bearer ${tok}` } })
+            .then((cfg) => setNeedsOnboarding(!(cfg?.geminiConfigured && cfg?.dartConfigured)))
+            .catch(() => setNeedsOnboarding(true))
         }}
       />
     )
@@ -2579,6 +2576,13 @@ function OnboardingWizard({
   const steps = ['환영', 'Gemini 키', 'DART 키', '완료']
   const last = steps.length - 1
 
+  // 이미 저장된 키가 있으면 표시(재진입 사용자) — config-status로 확인
+  useEffect(() => {
+    void apiFetch('/api/config-status', { headers: authHeaders })
+      .then((cfg) => { setGeminiSaved(!!cfg?.geminiConfigured); setDartSaved(!!cfg?.dartConfigured) })
+      .catch(() => undefined)
+  }, [authHeaders])
+
   const saveKey = async (provider: OnboardKeyProvider, value: string, markSaved: (v: boolean) => void) => {
     const trimmed = value.trim()
     if (!trimmed) {
@@ -2638,15 +2642,12 @@ function OnboardingWizard({
         {step === 0 && (
           <div className="onboard-body">
             <h2>환영합니다 👋</h2>
-            <p>이 앱은 <strong>API 키 없이도</strong> 시세·차트·한국 뉴스를 바로 사용할 수 있습니다.</p>
-            <p className="onboard-muted">
-              키를 추가하면 기능이 더해집니다:
-            </p>
+            <p>시작하려면 아래 <strong>2개 키를 발급</strong>해 주세요. 둘 다 <strong>무료</strong>이고 몇 분이면 됩니다:</p>
             <ul className="onboard-list">
-              <li><strong>Gemini</strong> — AI 번역·분석</li>
-              <li><strong>DART</strong> — 한국 공시(전자공시)</li>
+              <li><strong>Gemini</strong> — AI 뉴스 번역·종목 분석 <em>(구글 계정만 있으면 무료, 카드 불필요)</em></li>
+              <li><strong>DART</strong> — 한국 기업 공시(실적·재무) <em>(금감원 무료 오픈API)</em></li>
             </ul>
-            <p className="onboard-muted">키는 모두 선택 사항이며 나중에 설정에서 추가할 수 있습니다.</p>
+            <p className="onboard-muted">다음 단계에서 발급 방법을 안내합니다. 두 키를 저장해야 시작할 수 있습니다.</p>
             <div className="onboard-risk">
               <strong>⚠ 시작 전 꼭 확인</strong>
               <ul>
@@ -2661,16 +2662,16 @@ function OnboardingWizard({
 
         {step === 1 && (
           <div className="onboard-body">
-            <h2>Gemini 키 <span className="onboard-opt">(선택)</span></h2>
-            <p className="onboard-muted">AI 번역·분석을 켜려면 Google AI Studio에서 무료 키를 발급받으세요.</p>
+            <h2>Gemini 키 <span className="onboard-req">(필수)</span></h2>
+            <p className="onboard-free">✅ <strong>완전 무료</strong> — 구글 계정만 있으면 발급, 신용카드·결제 불필요. AI 뉴스 번역·종목 분석에 사용됩니다.</p>
             <ol className="onboard-steps">
               <li>
                 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">
                   aistudio.google.com/app/apikey
                 </a> 접속
               </li>
-              <li>Google 계정으로 로그인</li>
-              <li>"Create API key" 클릭</li>
+              <li>Google 계정으로 로그인 (무료)</li>
+              <li>"Create API key" 클릭 — 바로 발급</li>
               <li>생성된 키 복사 후 아래에 붙여넣기</li>
             </ol>
             <div className="onboard-keyrow">
@@ -2690,8 +2691,8 @@ function OnboardingWizard({
 
         {step === 2 && (
           <div className="onboard-body">
-            <h2>DART 키 <span className="onboard-opt">(선택)</span></h2>
-            <p className="onboard-muted">한국 전자공시(DART) 데이터를 보려면 오픈API 인증키를 발급받으세요.</p>
+            <h2>DART 키 <span className="onboard-req">(필수)</span></h2>
+            <p className="onboard-free">✅ <strong>무료</strong> — 금융감독원 전자공시 오픈API. 한국 기업 공시(실적·재무) 조회에 사용됩니다.</p>
             <ol className="onboard-steps">
               <li>
                 <a href="https://opendart.fss.or.kr" target="_blank" rel="noopener noreferrer">
@@ -2721,30 +2722,33 @@ function OnboardingWizard({
             <h2>준비 완료 🎉</h2>
             <ul className="onboard-list">
               <li>시세·차트·한국 뉴스 — 바로 사용 가능</li>
-              <li>Gemini 키 {geminiSaved ? <span className="onboard-saved-inline"><Check size={12} /> 저장됨</span> : '— 미설정'}</li>
-              <li>DART 키 {dartSaved ? <span className="onboard-saved-inline"><Check size={12} /> 저장됨</span> : '— 미설정'}</li>
+              <li>Gemini 키 <span className="onboard-saved-inline"><Check size={12} /> 저장됨</span> (AI 번역·분석)</li>
+              <li>DART 키 <span className="onboard-saved-inline"><Check size={12} /> 저장됨</span> (한국 공시)</li>
             </ul>
-            <p className="onboard-muted">키는 나중에 설정에서 추가·변경할 수 있습니다.</p>
+            <p className="onboard-muted">키는 나중에 설정에서 변경할 수 있습니다.</p>
           </div>
         )}
 
         {error && <div className="onboard-error">{error}</div>}
+        {((step === 1 && !geminiSaved) || (step === 2 && !dartSaved)) && (
+          <div className="onboard-need">이 키는 필수입니다. 위에서 발급·저장 후 다음으로 진행하세요.</div>
+        )}
 
         <div className="onboard-nav">
           <button type="button" className="onboard-secondary" onClick={goPrev} disabled={step === 0 || busy}>
             이전
           </button>
           {step < last ? (
-            <>
-              <button type="button" className="onboard-skip" onClick={finish} disabled={busy} title="온보딩 종료">
-                건너뛰기
-              </button>
-              <button type="button" className="onboard-primary" onClick={goNext} disabled={busy}>
-                다음
-              </button>
-            </>
+            <button
+              type="button"
+              className="onboard-primary"
+              onClick={goNext}
+              disabled={busy || (step === 1 && !geminiSaved) || (step === 2 && !dartSaved)}
+            >
+              다음
+            </button>
           ) : (
-            <button type="button" className="onboard-primary" onClick={finish} disabled={busy}>
+            <button type="button" className="onboard-primary" onClick={finish} disabled={busy || !geminiSaved || !dartSaved}>
               {busy ? '저장 중…' : '시작하기'}
             </button>
           )}

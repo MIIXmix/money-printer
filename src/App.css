@@ -2096,6 +2096,39 @@ input {
   font-weight: 500;
 }
 
+.onboard-req {
+  font-size: 12px;
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.onboard-free {
+  font-size: 12.5px;
+  color: var(--green);
+  background: #0a1611;
+  border: 1px solid #1d3a2c;
+  border-radius: 5px;
+  padding: 7px 9px;
+  margin: 0 0 4px;
+  line-height: 1.5;
+}
+
+.onboard-free strong {
+  color: var(--green);
+}
+
+.onboard-need {
+  font-size: 11.5px;
+  color: var(--amber);
+  text-align: center;
+}
+
+.onboard-list li em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .onboard-muted {
   color: var(--muted) !important;
   font-size: 12.5px !important;
