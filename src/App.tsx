@@ -162,6 +162,7 @@ type LayoutState = {
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+const POLL_MS = 180000 // 시세 자동 갱신 주기 (3분)
 
 const tabs: Array<{ id: TabId; label: string }> = [
   { id: 'markets', label: '시장' },
@@ -475,6 +476,28 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
   useEffect(() => {
     void loadPortfolio()
   }, [loadPortfolio])
+
+  // 시세 자동 갱신 (3분). 탭이 숨겨지면 건너뛰고, 다시 보이면 즉시 1회 갱신.
+  useEffect(() => {
+    if (!token) return
+    const tick = () => {
+      if (document.hidden) return
+      void loadMarket()
+      void loadFavQuotes()
+      void loadChart()
+      void loadPortfolio()
+      void apiFetch(`/api/market/quotes?symbols=${encodeURIComponent(selectedSymbol)}`)
+        .then((data) => setSelectedLiveQuote((data.quotes || [])[0] || null))
+        .catch(() => {})
+    }
+    const timer = setInterval(tick, POLL_MS)
+    const onVisible = () => { if (!document.hidden) tick() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [token, loadMarket, loadFavQuotes, loadChart, loadPortfolio, selectedSymbol])
 
   useEffect(() => {
     if (!token) return
@@ -1238,10 +1261,13 @@ function ChartCard({ symbol, period, interval, authHeaders, onRemove, onOpen }: 
   useEffect(() => {
     let alive = true
     setData(null)
-    void apiFetch(`/api/market/chart?symbol=${encodeURIComponent(symbol)}&period=${period}&interval=${interval}`, { headers: authHeaders })
-      .then((d) => { if (alive) setData(d) })
-      .catch(() => { if (alive) setData({ points: [], status: 'error', message: '조회 실패' }) })
-    return () => { alive = false }
+    const load = () =>
+      apiFetch(`/api/market/chart?symbol=${encodeURIComponent(symbol)}&period=${period}&interval=${interval}`, { headers: authHeaders })
+        .then((d) => { if (alive) setData(d) })
+        .catch(() => { if (alive) setData((prev) => prev ?? { points: [], status: 'error', message: '조회 실패' }) })
+    void load()
+    const timer = setInterval(() => { if (!document.hidden) void load() }, POLL_MS)
+    return () => { alive = false; clearInterval(timer) }
   }, [symbol, period, interval, authHeaders])
   const points: ChartPoint[] = data?.points || []
   const last = lastRealPoint(points)
