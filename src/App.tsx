@@ -186,6 +186,7 @@ const defaultLayout: LayoutState = {
     order: 280,
     ai: 260,
     fxRates: 196,
+    multiChartGrid: 780,
   },
   tabs: {
     markets: {
@@ -204,8 +205,8 @@ const defaultLayout: LayoutState = {
       right: ['ai', 'dataStatus'],
     },
     chart: {
-      left: ['favorites', 'koreaUniverse', 'watchGrid', 'chartControls'],
-      center: ['symbolHeader', 'chart', 'indicatorStack'],
+      left: ['favorites', 'koreaUniverse', 'watchGrid'],
+      center: ['multiChartGrid'],
       right: ['filings', 'ai'],
     },
     news: {
@@ -247,6 +248,7 @@ const widgetTitles: Record<string, { title: string; icon: ReactNode }> = {
   flowRadar: { title: 'FLOW RADAR', icon: <PanelsLeftRight size={14} /> },
   symbolHeader: { title: 'SNAPSHOT', icon: <Database size={14} /> },
   chart: { title: 'PRICE ACTION / TECH STACK', icon: <CandlestickChart size={14} /> },
+  multiChartGrid: { title: '멀티 차트', icon: <CandlestickChart size={14} /> },
   riskEngine: { title: 'TECH / RISK ENGINE', icon: <ShieldAlert size={14} /> },
   news: { title: 'TOP NEWS / TRANSLATION', icon: <Newspaper size={14} /> },
   order: { title: 'ORDER & EXECUTION', icon: <WalletCards size={14} /> },
@@ -268,6 +270,7 @@ const widgetTitles: Record<string, { title: string; icon: ReactNode }> = {
 function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
   const [activeTab, setActiveTab] = useState<TabId>('markets')
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL')
+  const [chartSymbols, setChartSymbols] = useState<string[]>(['AAPL'])
   const [command, setCommand] = useState('AAPL')
   const [searchResults, setSearchResults] = useState<Array<{ symbol: string; name: string; exchange: string; type: string }>>([])
   const [searchOpen, setSearchOpen] = useState(false)
@@ -564,7 +567,7 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
   }
 
   const onWidgetHeight = (id: string, height: number) => {
-    if (id === 'heatmap') return // fixed-height widget; surface manages its own size
+    if (id === 'heatmap' || id === 'multiChartGrid') return // fixed-height widget; manages its own size
     if (height < 120) return
     if (id === 'chart' && height < 440) return
     setLayout((current) => ({
@@ -603,6 +606,8 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
       setPeriod,
       setInterval: setChartInterval,
       setSelectedSymbol,
+      chartSymbols,
+      setChartSymbols,
       setCommand,
       setActiveTab,
       setKoreaMarket,
@@ -619,7 +624,7 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
     }
     switch (id) {
       case 'heatmap':
-        return <Heatmap authHeaders={authHeaders} />
+        return <Heatmap authHeaders={authHeaders} onPick={(s) => { setSelectedSymbol(s); setCommand(s); setActiveTab('markets') }} />
       case 'fxRates':
         return <FxRates authHeaders={authHeaders} />
       case 'favorites':
@@ -638,6 +643,8 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
         return <SymbolHeader {...common} />
       case 'chart':
         return <ChartPanel {...common} />
+      case 'multiChartGrid':
+        return <MultiChartGrid {...common} />
       case 'riskEngine':
         return <RiskEngine {...common} />
       case 'news':
@@ -1222,6 +1229,82 @@ function ChartPanel({ chart, period, interval, setPeriod, setInterval, reload }:
         <span>{chart.source || 'source 없음'}</span>
         <span>{chart.period}/{chart.interval}</span>
       </div>
+    </div>
+  )
+}
+
+function ChartCard({ symbol, period, interval, authHeaders, onRemove, onOpen }: any) {
+  const [data, setData] = useState<{ points?: ChartPoint[]; status?: string; message?: string } | null>(null)
+  useEffect(() => {
+    let alive = true
+    setData(null)
+    void apiFetch(`/api/market/chart?symbol=${encodeURIComponent(symbol)}&period=${period}&interval=${interval}`, { headers: authHeaders })
+      .then((d) => { if (alive) setData(d) })
+      .catch(() => { if (alive) setData({ points: [], status: 'error', message: '조회 실패' }) })
+    return () => { alive = false }
+  }, [symbol, period, interval, authHeaders])
+  const points: ChartPoint[] = data?.points || []
+  const last = lastRealPoint(points)
+  const prev = points.length >= 2 ? points[points.length - 2]?.close : undefined
+  const chg = last?.close != null && prev != null && prev ? ((last.close - prev) / prev) * 100 : null
+  return (
+    <div className="chart-card">
+      <div className="chart-card-head">
+        <button type="button" className="cc-sym" title="시장 탭에서 보기" onClick={() => onOpen?.(symbol)}>{symbol}</button>
+        <span className="cc-price">{last?.close == null ? '–' : formatNumber(last.close)}</span>
+        {chg != null && <span className={chg >= 0 ? 'up' : 'down'}>{formatPercent(chg)}</span>}
+        <span className="cc-spacer" />
+        <button type="button" className="cc-remove" title="제거" onClick={onRemove}><X size={12} /></button>
+      </div>
+      {data == null ? (
+        <div className="chart-card-loading">차트 로딩 중…</div>
+      ) : (
+        <TradingChart points={points} />
+      )}
+    </div>
+  )
+}
+
+function MultiChartGrid({ chartSymbols, setChartSymbols, selectedSymbol, period, interval, setPeriod, setInterval, authHeaders, setSelectedSymbol, setActiveTab }: any) {
+  const [input, setInput] = useState('')
+  const symbols: string[] = chartSymbols || []
+  const MAX = 6
+  const add = (raw: string) => {
+    const sym = raw.trim().toUpperCase()
+    if (!sym) return
+    if (symbols.includes(sym)) { setInput(''); return }
+    if (symbols.length >= MAX) return
+    setChartSymbols([...symbols, sym])
+    setInput('')
+  }
+  const remove = (sym: string) => setChartSymbols(symbols.filter((s) => s !== sym))
+  const openInMarkets = (sym: string) => { setSelectedSymbol?.(sym); setActiveTab?.('markets') }
+  return (
+    <div className="multi-chart">
+      <div className="multi-chart-bar">
+        <Segmented values={['1M', '3M', '6M', '1Y', '2Y', '5Y', '10Y']} value={period} onChange={setPeriod} />
+        <Segmented values={['1D', '1W', '1M']} value={interval} onChange={setInterval} />
+        <span className="mc-spacer" />
+        <input
+          className="mc-add-input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(input) } }}
+          placeholder="티커 추가 (예: AAPL, 005930.KS)"
+        />
+        <button type="button" onClick={() => add(input)} disabled={symbols.length >= MAX}>추가</button>
+        <button type="button" onClick={() => add(selectedSymbol)} disabled={symbols.length >= MAX} title="현재 선택 종목 추가">+ 현재 종목</button>
+        <span className="mc-count">{symbols.length}/{MAX}</span>
+      </div>
+      {symbols.length === 0 ? (
+        <EmptyState text="차트를 추가하세요. 티커 입력 또는 ‘+ 현재 종목’. 같은 화면에서 여러 종목 비교." />
+      ) : (
+        <div className={`multi-chart-grid cols-${symbols.length === 1 ? 1 : 2}`}>
+          {symbols.map((s) => (
+            <ChartCard key={s} symbol={s} period={period} interval={interval} authHeaders={authHeaders} onRemove={() => remove(s)} onOpen={openInMarkets} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -2261,6 +2344,10 @@ function mergeLayout(candidate: any): LayoutState {
   const heights = { ...defaultLayout.widgetHeights, ...(candidate?.widgetHeights || {}) }
   if ((heights.chart || 0) < 440) heights.chart = defaultLayout.widgetHeights.chart
   const mergedTabs = { ...defaultLayout.tabs, ...(candidate?.tabs || {}) } as LayoutState['tabs']
+  // Chart tab moved to a multi-chart grid; force the new structure on saved layouts.
+  if (!mergedTabs.chart?.center?.includes('multiChartGrid')) {
+    mergedTabs.chart = defaultLayout.tabs.chart
+  }
   // Inject the favorites widget into saved layouts that predate it.
   for (const id of Object.keys(mergedTabs) as TabId[]) {
     const cols = mergedTabs[id]

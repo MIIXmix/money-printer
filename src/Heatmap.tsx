@@ -40,7 +40,7 @@ function heatColor(pct: number | null): string {
   return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`
 }
 
-export function Heatmap({ authHeaders }: { authHeaders?: Record<string, string> }) {
+export function Heatmap({ authHeaders, onPick }: { authHeaders?: Record<string, string>; onPick?: (symbol: string) => void }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [market, setMarket] = useState<Market>('KOSPI')
   const [data, setData] = useState<HeatResponse | null>(null)
@@ -159,7 +159,8 @@ export function Heatmap({ authHeaders }: { authHeaders?: Record<string, string> 
             <div
               key={item.symbol}
               className="heat-tile"
-              title={`${item.name} ${item.symbol}\n${item.changePercent == null ? '데이터 없음' : `${item.changePercent.toFixed(2)}%`}`}
+              title={`${item.name} ${item.symbol}\n${item.changePercent == null ? '데이터 없음' : `${item.changePercent.toFixed(2)}%`}\n더블클릭: 시장 탭에서 보기`}
+              onDoubleClick={() => onPick?.(item.symbol)}
               style={{
                 left: rect.x,
                 top: rect.y,

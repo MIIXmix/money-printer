@@ -708,6 +708,147 @@ button {
   min-height: 0;
 }
 
+/* ── 멀티 차트 (차트 탭) ── */
+.multi-chart {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 8px;
+}
+
+.multi-chart-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mc-spacer {
+  flex: 1;
+}
+
+.mc-add-input {
+  width: 190px;
+  background: #070b0f;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.multi-chart-bar button {
+  border: 1px solid var(--line);
+  background: #0b1014;
+  color: var(--text);
+  border-radius: 4px;
+  min-height: 28px;
+  padding: 0 9px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.multi-chart-bar button:hover:not(:disabled) {
+  border-color: var(--cyan);
+}
+
+.multi-chart-bar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mc-count {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.multi-chart-grid {
+  display: grid;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.multi-chart-grid.cols-1 {
+  grid-template-columns: 1fr;
+}
+
+.multi-chart-grid.cols-2 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.chart-card {
+  height: 410px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.chart-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px;
+  background: #0b1115;
+}
+
+.cc-sym {
+  background: transparent;
+  border: 0;
+  color: var(--cyan);
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.cc-sym:hover {
+  text-decoration: underline;
+}
+
+.cc-price {
+  font-weight: 700;
+}
+
+.cc-spacer {
+  flex: 1;
+}
+
+.cc-remove {
+  border: 1px solid var(--line);
+  background: #14090b;
+  color: var(--red);
+  border-radius: 4px;
+  width: 22px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.cc-remove:hover {
+  background: #2a1115;
+}
+
+.chart-card-loading {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-card .trading-chart {
+  padding: 3px 4px;
+}
+
 .chart-controls {
   display: flex;
   flex-direction: column;
@@ -941,6 +1082,12 @@ button {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  cursor: pointer;
+}
+
+.heat-tile:hover {
+  outline: 1px solid var(--cyan);
+  outline-offset: -1px;
 }
 
 .heat-tile-text {
