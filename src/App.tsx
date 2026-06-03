@@ -2664,16 +2664,14 @@ function OnboardingWizard({
           <div className="onboard-body">
             <h2>Gemini 키 <span className="onboard-req">(필수)</span></h2>
             <p className="onboard-free">✅ <strong>완전 무료</strong> — 구글 계정만 있으면 발급, 신용카드·결제 불필요. AI 뉴스 번역·종목 분석에 사용됩니다.</p>
+            <a className="onboard-open" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">발급 페이지 열기 ↗</a>
             <ol className="onboard-steps">
-              <li>
-                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">
-                  aistudio.google.com/app/apikey
-                </a> 접속
-              </li>
-              <li>Google 계정으로 로그인 (무료)</li>
-              <li>"Create API key" 클릭 — 바로 발급</li>
-              <li>생성된 키 복사 후 아래에 붙여넣기</li>
+              <li><strong>aistudio.google.com/app/apikey</strong> 접속 후 Google 계정으로 로그인 (기존 지메일 계정이면 가입 불필요)</li>
+              <li>좌측의 <strong>“API 키 만들기”</strong>(Create API key) 클릭</li>
+              <li><strong>“새 프로젝트에서 API 키 만들기”</strong>(Create API key in new project) 선택 — 프로젝트가 자동 생성됩니다</li>
+              <li><strong>AIzaSy…</strong>로 시작하는 키가 바로 생성됩니다. 복사 후 아래에 붙여넣기</li>
             </ol>
+            <p className="onboard-tip">팁: 무료 등급(2.5 Flash)으로 충분합니다. 무료 등급은 입력 내용이 구글 서비스 개선에 쓰일 수 있으니, 민감한 정보는 넣지 마세요.</p>
             <div className="onboard-keyrow">
               <input
                 type="password"
@@ -2692,16 +2690,23 @@ function OnboardingWizard({
         {step === 2 && (
           <div className="onboard-body">
             <h2>DART 키 <span className="onboard-req">(필수)</span></h2>
-            <p className="onboard-free">✅ <strong>무료</strong> — 금융감독원 전자공시 오픈API. 한국 기업 공시(실적·재무) 조회에 사용됩니다.</p>
+            <p className="onboard-free">✅ <strong>무료</strong> — 금융감독원 전자공시 오픈API. 한국 기업 공시(실적·재무) 조회에 사용됩니다. <strong>개인은 신청 즉시 발급</strong>됩니다.</p>
+            <a className="onboard-open" href="https://opendart.fss.or.kr/uss/umt/EgovMberInsertView.do" target="_blank" rel="noopener noreferrer">발급(신청) 페이지 열기 ↗</a>
             <ol className="onboard-steps">
-              <li>
-                <a href="https://opendart.fss.or.kr" target="_blank" rel="noopener noreferrer">
-                  opendart.fss.or.kr
-                </a> 접속
+              <li><strong>opendart.fss.or.kr</strong> → 상단 <strong>“인증키 신청/관리” → “인증키 신청”</strong> (가입과 신청이 한 화면입니다)</li>
+              <li>신청서 작성:
+                <ul className="onboard-sub">
+                  <li><strong>사용자 구분: 개인</strong> (기업은 사업자등록증 필요 — 개인 권장)</li>
+                  <li><strong>이메일</strong> — 로그인 ID로 쓰입니다. ‘중복확인’ 클릭</li>
+                  <li><strong>비밀번호</strong> — 영문+숫자+특수문자 8~14자</li>
+                  <li><strong>API 사용환경: 웹</strong></li>
+                  <li><strong>API 사용용도</strong> — 예: “개인 투자 학습·포트폴리오”</li>
+                </ul>
               </li>
-              <li>인증키 신청/관리 → 오픈API 인증키 신청</li>
-              <li>이메일로 받은 인증키 복사 후 아래에 붙여넣기</li>
+              <li><strong>“등록”</strong> 클릭 → 개인은 <strong>즉시 40자리 인증키 발급</strong></li>
+              <li>키 다시 보려면 <strong>“인증키 신청/관리” → “인증키 관리”</strong>. 복사 후 아래에 붙여넣기</li>
             </ol>
+            <p className="onboard-tip">팁: 1인당 1개 키만 발급됩니다. 이메일이 곧 로그인 ID이니 기억해 두세요. 발급 후 바로 사용 가능합니다.</p>
             <div className="onboard-keyrow">
               <input
                 type="password"
