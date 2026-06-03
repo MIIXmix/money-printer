@@ -60,6 +60,73 @@ def parse_credential(raw: str | None) -> dict[str, str]:
     }
 
 
+def _get_token_sync(appkey: str, appsecret: str) -> str:
+    cached = _TOKEN_CACHE.get(appkey)
+    now = time.time()
+    if cached and cached[1] - 60 > now:
+        return cached[0]
+    with httpx.Client(timeout=15) as client:
+        resp = client.post(
+            f"{KIS_MOCK_BASE}/oauth2/tokenP",
+            headers={"Content-Type": "application/json"},
+            json={"grant_type": "client_credentials", "appkey": appkey, "appsecret": appsecret},
+        )
+    if resp.status_code != 200:
+        raise KisError(f"토큰 발급 실패 (HTTP {resp.status_code})")
+    data = resp.json()
+    token = data.get("access_token")
+    if not token:
+        raise KisError(f"토큰 응답 오류: {data.get('msg1') or data}")
+    expires_in = int(data.get("expires_in") or 86400)
+    _TOKEN_CACHE[appkey] = (token, now + expires_in)
+    return token
+
+
+def quote_price(raw_credential: str | None, symbol: str) -> dict | None:
+    """KIS 국내주식 현재가 (동기). 실패 시 None 반환(호출측이 yfinance fallback)."""
+    try:
+        cred = parse_credential(raw_credential)
+    except Exception:
+        return None
+    pdno = re.sub(r"\D", "", symbol)[:6]
+    if len(pdno) != 6:
+        return None
+    try:
+        token = _get_token_sync(cred["appkey"], cred["appsecret"])
+        headers = _base_headers(token, cred, "FHKST01010100")
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                f"{KIS_MOCK_BASE}/uapi/domestic-stock/v1/quotations/inquire-price",
+                headers=headers,
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": pdno},
+            )
+        data = resp.json() if resp.content else {}
+        if data.get("rt_cd") != "0":
+            return None
+        out = data.get("output") or {}
+        price = _to_float(out.get("stck_prpr"))
+        if price is None:
+            return None
+        change = _to_float(out.get("prdy_vrss"))
+        sign = str(out.get("prdy_vrss_sign") or "")
+        if change is not None and sign in ("4", "5"):  # 4 하락, 5 하한
+            change = -abs(change)
+        prev = price - change if change is not None else None
+        pct = _to_float(out.get("prdy_ctrt"))
+        if pct is not None and sign in ("4", "5"):
+            pct = -abs(pct)
+        return {
+            "price": price,
+            "previousClose": prev,
+            "change": change,
+            "changePercent": pct,
+            "currency": "KRW",
+            "source": "KIS 실시간(모의 도메인)",
+        }
+    except Exception:
+        return None
+
+
 async def _get_token(appkey: str, appsecret: str) -> str:
     cached = _TOKEN_CACHE.get(appkey)
     now = time.time()

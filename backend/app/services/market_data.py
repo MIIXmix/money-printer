@@ -13,6 +13,7 @@ import pandas as pd
 import yfinance as yf
 
 from .indicators import add_indicators, frame_to_points
+from .kis import quote_price
 
 
 DEFAULT_MARKET_SYMBOLS = [
@@ -337,10 +338,41 @@ def _history_last(symbol: str) -> tuple[float | None, float | None, str | None]:
     return last, previous, ts
 
 
+def _kis_quote(normalized: str) -> dict[str, Any] | None:
+    """KIS 키가 있으면 한국 종목 실시간 시세를 표준 quote 형식으로 반환."""
+    from ..auth import get_api_key  # lazy import to avoid import cycles
+
+    cred = get_api_key("kis")
+    if not cred:
+        return None
+    q = quote_price(cred, normalized)
+    if not q or q.get("price") is None:
+        return None
+    return {
+        "symbol": normalized,
+        "name": SYMBOL_LABELS.get(normalized, normalized),
+        "price": q["price"],
+        "previousClose": q.get("previousClose"),
+        "change": q.get("change"),
+        "changePercent": q.get("changePercent"),
+        "marketCap": None,
+        "currency": "KRW",
+        "status": "live",
+        "message": "KIS 실시간",
+        "source": q.get("source") or "KIS",
+        "asOf": _now(),
+    }
+
+
 def quote(symbol: str) -> dict[str, Any]:
     normalized = symbol.strip().upper()
     if not normalized:
         return {"symbol": symbol, "status": "not_available", "message": "데이터 없음"}
+    # 한국 종목 + KIS 키가 있으면 실시간 시세 우선(yfinance는 당일 장중 데이터를 잘 안 줌).
+    if normalized.endswith((".KS", ".KQ")):
+        kis_q = _kis_quote(normalized)
+        if kis_q is not None:
+            return kis_q
     try:
         ticker = yf.Ticker(normalized)
         fast = {}
