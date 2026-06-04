@@ -781,6 +781,8 @@ def strategies_meta(_user: dict[str, Any] = Depends(require_auth)) -> dict[str, 
 
 @app.get("/api/strategies")
 def strategies_list(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    # 첫 방문(전략 0개)이면 기본 예시 전략 1개 시드(비활성). 학습용.
+    auto_strategy.seed_example_strategies(user["id"])
     return {"strategies": auto_store.list_strategies(user["id"])}
 
 

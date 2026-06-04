@@ -11,12 +11,38 @@ from . import allocator, backtest, broker, config, risk, rotation, service, stor
 from . import strategy as strat_mod
 from .strategy import INDICATOR_FIELDS, OPERATORS, StrategyDef
 
-# GTAA 글로벌 멀티에셋 기본 유니버스(전부 USD ETF, 환-랭킹 일관). 검증: -14% MDD/Sharpe0.91.
+# 멀티에셋 로테이션 엔진의 기본 후보 유니버스(예시용 일반 자산군 ETF).
 ROTATION_DEFAULT_UNIVERSE = [
     "SPY", "QQQ", "EFA", "EEM", "EWY", "EWJ",
     "TLT", "IEF", "LQD", "GLD", "DBC", "VNQ",
 ]
 ROTATION_MAX_HOLDINGS = 12   # 로테이션 전용 종목수 상한(분산형 → 집중형 MAX_POSITIONS=4 미적용)
+
+# 신규 사용자에게 1회 시드되는 기본 예시 전략(비활성). 사용법 학습용 — 수익 보장 아님.
+EXAMPLE_STRATEGIES = [
+    {
+        "name": "Example 1 — SMA 골든크로스",
+        "definition": {
+            "entry": [{"left": "sma20", "op": "cross_above", "right": "sma60"}],
+            "exit": [{"left": "sma20", "op": "cross_below", "right": "sma60"}],
+            "stop_loss_pct": -0.07,
+            "take_profit_pct": 0.15,
+            "timeframe": "1d",
+            "universe": ["AAPL"],
+        },
+    },
+]
+
+
+def seed_example_strategies(user_id: int) -> int:
+    """전략이 하나도 없는 사용자에게 기본 예시 전략을 1회 생성(비활성). 생성 수 반환."""
+    if store.list_strategies(user_id):
+        return 0
+    n = 0
+    for ex in EXAMPLE_STRATEGIES:
+        store.create_strategy(user_id, name=ex["name"], definition=ex["definition"])
+        n += 1
+    return n
 
 
 def _rotation_params(definition: dict) -> rotation.RotationParams:
@@ -80,23 +106,6 @@ def builder_meta() -> dict[str, Any]:
             "leverageInverseBlocked": True,
         },
         "note": "조건은 AND 결합. 진입셋·청산셋·손절%/익절% 분리. 리스크 가드는 전략 위에 강제(기본 제공, 일부 유저 조절).",
-        "rotationPreset": {
-            "kind": "rotation",
-            "name": "GTAA 글로벌 멀티에셋",
-            "universe": list(ROTATION_DEFAULT_UNIVERSE),
-            "topN": 7, "weight": "equal", "regimeMode": "none", "cashForEmpty": True,
-            "lookbackM": 12, "skipM": 1, "maxWeight": 0.25, "indexSymbol": "SPY",
-            "rebalance": "monthly",
-            "labels": {
-                "SPY": "미국 S&P500", "QQQ": "미국 나스닥100", "EFA": "선진국 주식", "EEM": "신흥국 주식",
-                "EWY": "한국 주식", "EWJ": "일본 주식", "TLT": "미국 장기국채", "IEF": "미국 중기국채",
-                "LQD": "미국 회사채", "GLD": "금", "DBC": "원자재", "VNQ": "미국 리츠",
-            },
-            "backtest": {"cagr": 0.10, "maxDrawdown": -0.14, "sharpe": 0.91, "window": "약 9년(2022 폭락 포함)"},
-            "desc": "주식·채권·금·리츠·원자재 12자산을 월간 모멘텀으로 로테이션. 음수모멘텀·빈슬롯은 현금. "
-                    "검증: CAGR ~10%, 최대낙폭 -14%, Sharpe 0.91. 롱온리·결정적·AI 미관여. "
-                    "기대치는 과거보다 보수적으로(생존편향 적은 ETF지만 미래 보장 아님).",
-        },
     }
 
 
