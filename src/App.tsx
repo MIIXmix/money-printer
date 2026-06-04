@@ -152,7 +152,7 @@ type PortfolioSummary = {
   warnings?: string[]
 }
 
-type TabId = 'markets' | 'heatmap' | 'monitor' | 'chart' | 'news' | 'portfolio' | 'options' | 'orders' | 'ai'
+type TabId = 'markets' | 'heatmap' | 'monitor' | 'chart' | 'news' | 'portfolio' | 'auto' | 'options' | 'orders' | 'ai'
 type ColumnId = 'left' | 'center' | 'right'
 
 type LayoutState = {
@@ -171,6 +171,7 @@ const tabs: Array<{ id: TabId; label: string }> = [
   { id: 'chart', label: '차트' },
   { id: 'news', label: '뉴스' },
   { id: 'portfolio', label: '포트폴리오' },
+  { id: 'auto', label: '자동전략' },
   { id: 'options', label: '옵션' },
   { id: 'orders', label: '주문' },
   { id: 'ai', label: 'AI' },
@@ -188,6 +189,7 @@ const defaultLayout: LayoutState = {
     ai: 260,
     fxRates: 196,
     multiChartGrid: 780,
+    autoStrategy: 760,
   },
   tabs: {
     markets: {
@@ -219,6 +221,11 @@ const defaultLayout: LayoutState = {
       left: ['portfolioControls', 'fxRates', 'watchGrid'],
       center: ['portfolio', 'portfolioRisk'],
       right: ['ai', 'dataStatus'],
+    },
+    auto: {
+      left: ['favorites', 'watchGrid'],
+      center: ['autoStrategy'],
+      right: ['dataStatus', 'ai'],
     },
     options: {
       left: ['watchGrid', 'chartControls'],
@@ -266,6 +273,7 @@ const widgetTitles: Record<string, { title: string; icon: ReactNode }> = {
   optionsFlow: { title: 'OPTIONS FLOW INTELLIGENCE', icon: <Activity size={14} /> },
   brokerStatus: { title: 'BROKER CONNECTORS', icon: <Lock size={14} /> },
   paperOrdersPolicy: { title: 'PAPER / LIVE TRADING GUARD', icon: <ShieldAlert size={14} /> },
+  autoStrategy: { title: '자동전략 / AUTO STRATEGY', icon: <Bot size={14} /> },
 }
 
 function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
@@ -590,7 +598,7 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
   }
 
   const onWidgetHeight = (id: string, height: number) => {
-    if (id === 'heatmap' || id === 'multiChartGrid') return // fixed-height widget; manages its own size
+    if (id === 'heatmap' || id === 'multiChartGrid' || id === 'autoStrategy') return // fixed-height widget; manages its own size
     if (height < 120) return
     if (id === 'chart' && height < 440) return
     setLayout((current) => ({
@@ -700,6 +708,8 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
         return <BrokerStatus {...common} />
       case 'paperOrdersPolicy':
         return <PaperPolicy />
+      case 'autoStrategy':
+        return <AutoStrategyPanel {...common} />
       default:
         return <EmptyState text="위젯 없음" />
     }
@@ -2212,6 +2222,401 @@ function PaperPolicy() {
   )
 }
 
+// 자동전략 / AUTO STRATEGY — 모의(paper) 자동매매 상태판. 실전 주문과 연결되지 않음.
+type AutoStatus = {
+  status?: string
+  halted?: boolean
+  haltReason?: string | null
+  seedKrw?: number
+  cashKrw?: number
+  positionsValueKrw?: number
+  totalValueKrw?: number
+  cumReturn?: number
+  dailyReturn?: number
+  drawdown?: number
+  positions?: Array<{ symbol: string; quantity: number; currency?: string; price?: number; valueKrw?: number; avgCostNative?: number; dataStatus?: string }>
+  fxUsdKrw?: number
+  limits?: {
+    dailyLossHalt?: number
+    totalDrawdownHalt?: number
+    minCashPct?: number
+    maxSinglePct?: number
+    maxPositions?: number
+    feePct?: number
+    slippagePct?: number
+    longOnly?: boolean
+    leverageInverseBlocked?: boolean
+  }
+  paperOnly?: boolean
+  liveTradingImplemented?: boolean
+  recentSignals?: Array<{ symbol: string; action: string; reason?: string; data_status?: string; est_amount_krw?: number; created_at?: string }>
+  recentOrders?: Array<{ symbol: string; side: string; quantity: number; price_native?: number; gross_krw?: number; fee_krw?: number; realized_pnl_krw?: number; status: string; block_reason?: string; data_status?: string; created_at?: string }>
+  riskEvents?: Array<{ event: string; detail?: string; symbol?: string; created_at?: string }>
+}
+
+type PromotionCheck = {
+  passed?: boolean
+  checks?: Record<string, { need?: any; value?: any; pass?: boolean }>
+  performance?: any
+  note?: string
+  liveTradingImplemented?: boolean
+}
+
+function pct(value: any) {
+  if (value == null || Number.isNaN(Number(value))) return '–'
+  const num = Number(value) * 100
+  return `${num >= 0 ? '+' : ''}${num.toFixed(2)}%`
+}
+
+function pctTone(value: any) {
+  if (value == null || Number.isNaN(Number(value))) return undefined
+  return Number(value) >= 0 ? 'up' : 'down'
+}
+
+function autoStatusMeta(status?: string, halted?: boolean) {
+  if (halted || status === 'blocked') return { cls: 'blocked', label: '차단됨' }
+  if (status === 'running') return { cls: 'running', label: '가동 중' }
+  return { cls: 'stopped', label: '정지' }
+}
+
+function SignalChip({ action }: { action: string }) {
+  const map: Record<string, { cls: string; label: string }> = {
+    BUY: { cls: 'buy', label: 'BUY' },
+    SELL: { cls: 'sell', label: 'SELL' },
+    HOLD: { cls: 'hold', label: 'HOLD' },
+    BLOCKED: { cls: 'blocked', label: 'BLOCKED' },
+    REBALANCE: { cls: 'rebalance', label: 'REBAL' },
+  }
+  const meta = map[(action || '').toUpperCase()] || { cls: 'hold', label: action || '–' }
+  return <span className={`sig-chip ${meta.cls}`}>{meta.label}</span>
+}
+
+function PromoChecklist({ promotion }: { promotion: PromotionCheck | null }) {
+  if (!promotion) return <EmptyState text="검증 데이터 로딩 중" />
+  const labels: Record<string, string> = {
+    minDays: '최소 운용일수',
+    minTrades: '최소 거래수',
+    netReturn: '순수익률',
+    maxDrawdown: '최대 낙폭',
+    dailyViolations: '하루 -5% 위반',
+  }
+  const order = ['minDays', 'minTrades', 'netReturn', 'maxDrawdown', 'dailyViolations']
+  const checks = promotion.checks || {}
+  return (
+    <div className="promo-list">
+      <div className={`promo-head ${promotion.passed ? 'pass' : 'fail'}`}>
+        {promotion.passed ? '✓ 전체 통과' : '✗ 미통과'} — 30일 실전 전환 체크리스트
+      </div>
+      {order.map((key) => {
+        const c = checks[key]
+        if (!c) return null
+        return (
+          <div className={`promo-check ${c.pass ? 'pass' : 'fail'}`} key={key}>
+            <span className="promo-mark">{c.pass ? '✓' : '✗'}</span>
+            <span className="promo-name">{labels[key] || key}</span>
+            <span className="promo-val">필요 {String(c.need ?? '–')} / 현재 {String(c.value ?? '–')}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function AutoReportModal({ report, promotion, onClose }: { report: any; promotion: PromotionCheck | null; onClose: () => void }) {
+  const perf = report?.performance || {}
+  const snaps = (report?.snapshots || []).map((s: any) => Number(s.total_value_krw)).filter((v: number) => !Number.isNaN(v))
+  let spark = ''
+  if (snaps.length >= 2) {
+    const low = Math.min(...snaps)
+    const high = Math.max(...snaps)
+    spark = snaps
+      .map((v: number, i: number) => {
+        const x = 4 + (i / Math.max(snaps.length - 1, 1)) * 312
+        const y = 56 - ((v - low) / Math.max(high - low, 1)) * 48
+        return `${i === 0 ? 'M' : 'L'} ${x} ${y}`
+      })
+      .join(' ')
+  }
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section className="auto-report-modal" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <strong>30일 모의 운용 리포트 (검증용)</strong>
+          <button type="button" onClick={onClose}>닫기</button>
+        </header>
+        {report ? (
+          <div className="auto-report-body">
+            <div className="metric-row">
+              <Metric label="총자산" value={formatMoney(perf.totalValueKrw, 'KRW')} />
+              <Metric label="누적 수익률" value={pct(perf.cumReturn)} tone={pctTone(perf.cumReturn)} />
+              <Metric label="최대 낙폭" value={pct(perf.maxDrawdown)} tone={pctTone(perf.maxDrawdown)} />
+              <Metric label="운용일수" value={`${formatNumber(perf.days)}일`} />
+            </div>
+            <div className="metric-row">
+              <Metric label="거래수" value={formatNumber(perf.trades)} />
+              <Metric label="승률" value={perf.winRate == null ? '–' : `${Number(perf.winRate).toFixed(1)}%`} />
+              <Metric label="평균 손익" value={formatMoney(perf.avgPnlKrw, 'KRW')} tone={pctTone(perf.avgPnlKrw)} />
+              <Metric label="실현 손익" value={formatMoney(perf.realizedPnlKrw, 'KRW')} tone={pctTone(perf.realizedPnlKrw)} />
+            </div>
+            <div className="metric-row">
+              <Metric label="수수료" value={formatMoney(perf.feesKrw, 'KRW')} />
+              <Metric label="슬리피지" value={formatMoney(perf.slippageKrw, 'KRW')} />
+              <Metric label="하루 -5% 위반" value={formatNumber(perf.dailyViolations)} />
+              <Metric label="시드" value={formatMoney(perf.seedKrw, 'KRW')} />
+            </div>
+            {spark && (
+              <div className="auto-spark">
+                <span>자산 추이</span>
+                <svg viewBox="0 0 320 60"><path d={spark} /></svg>
+              </div>
+            )}
+            <PromoChecklist promotion={promotion} />
+            <DisclaimerNote />
+          </div>
+        ) : (
+          <EmptyState text="리포트 데이터 없음" />
+        )}
+      </section>
+    </div>
+  )
+}
+
+function AutoStrategyPanel({ authHeaders }: any) {
+  const [status, setStatus] = useState<AutoStatus | null>(null)
+  const [promotion, setPromotion] = useState<PromotionCheck | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [runResult, setRunResult] = useState<string | null>(null)
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+  const [report, setReport] = useState<any>(null)
+  const [showReport, setShowReport] = useState(false)
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const data = await apiFetch('/api/automation/status', { headers: authHeaders })
+      setStatus(data)
+    } catch (e: any) {
+      setErrMsg(e?.message || '상태 로딩 실패')
+    }
+  }, [authHeaders])
+
+  const loadPromotion = useCallback(async () => {
+    try {
+      const data = await apiFetch('/api/automation/promotion-check', { headers: authHeaders })
+      setPromotion(data)
+    } catch {
+      setPromotion(null)
+    }
+  }, [authHeaders])
+
+  useEffect(() => {
+    void loadStatus()
+    void loadPromotion()
+  }, [loadStatus, loadPromotion])
+
+  const post = async (path: string, key: string) => {
+    setBusy(key)
+    setErrMsg(null)
+    try {
+      const res = await apiFetch(path, { method: 'POST', headers: authHeaders })
+      if (res?.message) setErrMsg(res.message)
+      return res
+    } catch (e: any) {
+      setErrMsg(e?.message || '요청 실패')
+      return null
+    } finally {
+      setBusy(null)
+      await loadStatus()
+    }
+  }
+
+  const onStart = async () => {
+    setRunResult(null)
+    await post('/api/automation/start', 'start')
+  }
+  const onStop = async () => {
+    setRunResult(null)
+    await post('/api/automation/stop', 'stop')
+  }
+  const onRunOnce = async () => {
+    setRunResult(null)
+    const res = await post('/api/automation/run-once', 'run')
+    if (res) {
+      const sig = Array.isArray(res.signals) ? res.signals.length : 0
+      const ord = Array.isArray(res.orders) ? res.orders.length : 0
+      const blk = Array.isArray(res.blocked) ? res.blocked.length : (res.blocked ?? 0)
+      setRunResult(`레짐 ${res.regime ?? '–'} · 신호 ${sig} · 주문 ${ord} · 차단 ${blk}`)
+    }
+    await loadPromotion()
+  }
+  const onOpenReport = async () => {
+    setBusy('report')
+    setErrMsg(null)
+    try {
+      const data = await apiFetch('/api/automation/report', { headers: authHeaders })
+      setReport(data)
+      await loadPromotion()
+      setShowReport(true)
+    } catch (e: any) {
+      setErrMsg(e?.message || '리포트 로딩 실패')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (!status) {
+    return (
+      <div className="auto-panel">
+        {errMsg ? <StatusBadge status="error" message={errMsg} /> : <EmptyState text="자동전략 상태 로딩 중" />}
+      </div>
+    )
+  }
+
+  const meta = autoStatusMeta(status.status, status.halted)
+  const limits = status.limits || {}
+  const running = status.status === 'running'
+  const positions = status.positions || []
+  const signals = (status.recentSignals || []).slice(0, 8)
+  const orders = (status.recentOrders || []).slice(0, 8)
+  const riskEvents = (status.riskEvents || []).slice(0, 6)
+  const limitLine = `일손실 ${pct(limits.dailyLossHalt)} / 전체낙폭 ${pct(limits.totalDrawdownHalt)} / 현금 ≥${limits.minCashPct == null ? '–' : (limits.minCashPct * 100).toFixed(0)}% / 단일 ≤${limits.maxSinglePct == null ? '–' : (limits.maxSinglePct * 100).toFixed(0)}% / 최대 ${limits.maxPositions ?? '–'}종목 / 롱온리·레버리지·인버스 금지`
+
+  return (
+    <div className="auto-panel">
+      <div className="auto-header">
+        <span className="auto-badge paper">PAPER ONLY</span>
+        <span className="auto-badge ghost">실전 미구현</span>
+        <span className={`auto-status ${meta.cls}`}>{meta.label}</span>
+        <span className="auto-seed">시드 {formatMoney(status.seedKrw, 'KRW')}</span>
+      </div>
+
+      {status.halted && status.haltReason && <StatusBadge status="error" message={`차단: ${status.haltReason}`} />}
+
+      <div className="metric-row">
+        <Metric label="총자산" value={formatMoney(status.totalValueKrw, 'KRW')} />
+        <Metric label="누적 수익률" value={pct(status.cumReturn)} tone={pctTone(status.cumReturn)} />
+        <Metric label="오늘 손익" value={pct(status.dailyReturn)} tone={pctTone(status.dailyReturn)} />
+        <Metric label="전체 낙폭" value={pct(status.drawdown)} tone={pctTone(status.drawdown)} />
+      </div>
+
+      <div className="auto-actions">
+        <button type="button" onClick={() => void onStart()} disabled={!!busy || running || !!status.halted}>
+          {busy === 'start' ? '시작 중…' : '자동전략 시작'}
+        </button>
+        <button type="button" onClick={() => void onStop()} disabled={!!busy || !running}>
+          {busy === 'stop' ? '정지 중…' : '정지'}
+        </button>
+        <button type="button" onClick={() => void onRunOnce()} disabled={!!busy}>
+          {busy === 'run' ? '실행 중…' : '1회 판단 실행'}
+        </button>
+        <button type="button" onClick={() => void onOpenReport()} disabled={!!busy}>
+          {busy === 'report' ? '여는 중…' : '30일 리포트 보기'}
+        </button>
+      </div>
+
+      {runResult && <div className="auto-runresult">{runResult}</div>}
+      {errMsg && <StatusBadge status="error" message={errMsg} />}
+
+      <div className="auto-limits">{limitLine}</div>
+
+      <div className="auto-section">
+        <h4>보유</h4>
+        {positions.length ? (
+          <div className="table compact">
+            <div className="table-row head"><span>종목</span><span>수량</span><span>평가액</span><span>상태</span></div>
+            {positions.map((p) => (
+              <div className="table-row" key={p.symbol}>
+                <span>{p.symbol}</span>
+                <span>{formatNumber(p.quantity)}</span>
+                <span>{formatMoney(p.valueKrw, 'KRW')}</span>
+                <span>{p.dataStatus ? <StatusBadge status={p.dataStatus} /> : '–'}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState text="보유 없음" />
+        )}
+      </div>
+
+      <div className="auto-section">
+        <h4>최근 신호</h4>
+        {signals.length ? (
+          <div className="auto-feed">
+            {signals.map((s, i) => (
+              <div className="auto-feed-row" key={`${s.symbol}-${i}`}>
+                <SignalChip action={s.action} />
+                <span className="af-symbol">{s.symbol}</span>
+                <span className="af-reason">{s.reason || '–'}</span>
+                {s.data_status && <StatusBadge status={s.data_status} />}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState text="신호 없음" />
+        )}
+      </div>
+
+      <div className="auto-section">
+        <h4>최근 주문</h4>
+        {orders.length ? (
+          <div className="auto-feed">
+            {orders.map((o, i) => {
+              const sideKr = (o.side || '').toUpperCase() === 'BUY' || o.side === '매수' ? '매수' : '매도'
+              const isSell = sideKr === '매도'
+              return (
+                <div className="auto-feed-row" key={`${o.symbol}-${i}`}>
+                  <span className={`sig-chip ${isSell ? 'sell' : 'buy'}`}>{sideKr}</span>
+                  <span className="af-symbol">{o.symbol}</span>
+                  <span className="af-qty">{formatNumber(o.quantity)}주</span>
+                  {o.status === 'blocked' ? (
+                    <span className="af-blocked">차단 · {o.block_reason || '사유 미상'}</span>
+                  ) : o.status === 'filled' ? (
+                    <span className="af-filled">
+                      체결{isSell && o.realized_pnl_krw != null ? ` · 실현 ${formatMoney(o.realized_pnl_krw, 'KRW')}` : ''}
+                    </span>
+                  ) : (
+                    <span className="af-skipped">{o.status}</span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <EmptyState text="주문 없음" />
+        )}
+      </div>
+
+      {riskEvents.length > 0 && (
+        <div className="auto-section">
+          <h4>차단 사유 / 리스크 이벤트</h4>
+          <div className="auto-feed">
+            {riskEvents.map((r, i) => (
+              <div className="auto-feed-row risk" key={`${r.event}-${i}`}>
+                <span className="af-risk-event">{r.event}</span>
+                <span className="af-reason">{r.detail || ''}{r.symbol ? ` · ${r.symbol}` : ''}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="auto-section">
+        <PromoChecklist promotion={promotion} />
+      </div>
+
+      <div className="auto-live-disabled">
+        <button type="button" disabled>실전 자동매매 승인</button>
+        <small>30일 검증 통과 + 수동 승인 + 별도 후속 구현 전까지 비활성. 1차에서는 실제 주문과 연결되지 않습니다.</small>
+      </div>
+
+      <DisclaimerNote />
+
+      {showReport && (
+        <AutoReportModal report={report} promotion={promotion} onClose={() => setShowReport(false)} />
+      )}
+    </div>
+  )
+}
+
 function PortfolioModal({ portfolio, onClose }: { portfolio: PortfolioSummary | null; onClose: () => void }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -2373,6 +2778,10 @@ function mergeLayout(candidate: any): LayoutState {
   // Chart tab moved to a multi-chart grid; force the new structure on saved layouts.
   if (!mergedTabs.chart?.center?.includes('multiChartGrid')) {
     mergedTabs.chart = defaultLayout.tabs.chart
+  }
+  // Auto-strategy tab is new; force the default structure on saved layouts missing it.
+  if (!mergedTabs.auto?.center?.includes('autoStrategy')) {
+    mergedTabs.auto = defaultLayout.tabs.auto
   }
   // Inject the favorites widget into saved layouts that predate it.
   for (const id of Object.keys(mergedTabs) as TabId[]) {

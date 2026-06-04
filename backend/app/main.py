@@ -39,6 +39,9 @@ from .services.market_data import (
     quotes,
     search_symbols,
 )
+from .automation import performance as auto_perf
+from .automation import service as auto_service
+from .automation import store as auto_store
 from .services.kis import KisError, inquire_balance, submit_order
 from .services.news import get_news
 from .services.portfolio import list_holdings, portfolio_summary
@@ -632,6 +635,53 @@ async def kis_balance(_user: dict[str, Any] = Depends(require_auth)) -> dict[str
         return await inquire_balance(cred)
     except KisError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ── 자동전략 (Paper Trading 전용. 실전 주문 경로 없음) ──────────────────────
+
+
+@app.get("/api/automation/status")
+def automation_status(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_service.status(user["id"])
+
+
+@app.post("/api/automation/start")
+def automation_start(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_service.start(user["id"])
+
+
+@app.post("/api/automation/stop")
+def automation_stop(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_service.stop(user["id"])
+
+
+@app.post("/api/automation/run-once")
+def automation_run_once(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_service.run_once(user["id"], trigger="manual")
+
+
+@app.get("/api/automation/report")
+def automation_report(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    uid = user["id"]
+    return {
+        "performance": auto_perf.compute(uid),
+        "promotion": auto_perf.promotion_check(uid),
+        "snapshots": auto_store.all_snapshots(uid),
+        "recentOrders": auto_store.recent_orders(uid, 30),
+        "paperOnly": True,
+        "liveTradingImplemented": False,
+    }
+
+
+@app.get("/api/automation/audit-log")
+def automation_audit(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    uid = user["id"]
+    return {"items": auto_store.recent_audit(uid, 80), "riskEvents": auto_store.recent_risk_events(uid, 40)}
+
+
+@app.get("/api/automation/promotion-check")
+def automation_promotion(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_perf.promotion_check(user["id"])
 
 
 # ── Static frontend ────────────────────────────────────────────────────────

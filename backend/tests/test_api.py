@@ -1,25 +1,12 @@
 from __future__ import annotations
 
-import os
-import tempfile
-from pathlib import Path
-from uuid import uuid4
+from fastapi.testclient import TestClient
 
-# Isolate tests on a throwaway DB + fixed secret BEFORE importing the app
-# (config reads these at import time).
-_TMP_DB = Path(tempfile.gettempdir()) / f"kft_test_{uuid4().hex}.db"
-os.environ["DATABASE_PATH"] = str(_TMP_DB)
-os.environ["APP_SECRET"] = "test-secret-" + uuid4().hex
+from backend.app.main import app
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from backend.app.db import init_db  # noqa: E402
-from backend.app.main import app  # noqa: E402
-
-init_db()
 client = TestClient(app)
 
-_PASSWORD = "master-pass-123"
+_PASSWORD = "master-pass-123"  # set up by conftest.py
 
 
 def _token() -> str:
