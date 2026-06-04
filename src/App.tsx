@@ -341,6 +341,14 @@ function Terminal({ token, onLock, guest = false }: { token: string; onLock: () 
   const [dragPanel, setDragPanel] = useState<'left' | 'right' | null>(null)
   const shellRef = useRef<HTMLDivElement | null>(null)
 
+  // 탭 전환 시 모든 컬럼/페이지 스크롤을 즉시 맨 위로 — 이전 탭의 스크롤 위치가
+  // 캐리오버되어 '스르륵 올라가는' 현상을 제거하고 모든 탭이 위에서부터 다 보이게 한다.
+  useEffect(() => {
+    const cols = shellRef.current?.querySelectorAll<HTMLElement>('.terminal-column, .widget')
+    cols?.forEach((el) => { el.scrollTop = 0 })
+    if (typeof window !== 'undefined') window.scrollTo(0, 0)
+  }, [activeTab])
+
   const authHeaders = useMemo<Record<string, string>>(() => ({ Authorization: token ? `Bearer ${token}` : '' }), [token])
 
   const selectedQuote = useMemo(
