@@ -14,12 +14,14 @@ from pydantic import BaseModel, Field
 
 from .auth import (
     change_master,
+    create_guest_token,
     create_token,
     encrypt_secret,
     get_api_key,
     is_initialized,
     mask_secret,
     require_auth,
+    require_view,
     setup_master,
     verify_master,
 )
@@ -42,6 +44,8 @@ from .services.market_data import (
 from .automation import performance as auto_perf
 from .automation import service as auto_service
 from .automation import store as auto_store
+from .automation import strategy_service as auto_strategy
+from .automation import scheduler as auto_scheduler
 from .services.kis import KisError, inquire_balance, submit_order
 from .services.news import get_news
 from .services.portfolio import list_holdings, portfolio_summary
@@ -174,6 +178,57 @@ class KisOrderIn(BaseModel):
     limit_price: float | None = Field(default=None, ge=0)
 
 
+class AutoSeedIn(BaseModel):
+    # paper 시뮬 시드(KRW). 5만~10억 범위. 변경 시 시뮬 이력 초기화.
+    seed_krw: float = Field(ge=50_000, le=1_000_000_000)
+
+
+class AutoSettingsIn(BaseModel):
+    # 전략 파라미터만. 리스크 한도(일손실/낙폭/현금/단일/최대종목)는 변경 불가.
+    stop_loss_pct: float | None = Field(default=None, ge=-0.5, le=-0.005)
+    rsi_buy_min: float | None = Field(default=None, ge=0, le=100)
+    rsi_buy_max: float | None = Field(default=None, ge=0, le=100)
+    rsi_overheat: float | None = Field(default=None, ge=0, le=100)
+    volume_factor: float | None = Field(default=None, ge=0, le=10)
+    min_order_krw: float | None = Field(default=None, ge=10_000, le=100_000_000)
+    universe: list[str] | None = Field(default=None, max_length=30)
+    universe_mode: str | None = Field(default=None, pattern="^(auto|custom)$")
+    scan_kospi_top: int | None = Field(default=None, ge=0, le=829)
+    scan_nasdaq_top: int | None = Field(default=None, ge=0, le=100)
+    broker_mode: str | None = Field(default=None, pattern="^(paper_internal|kis_mock)$")
+    engine: str | None = Field(default=None, pattern="^(legacy|builder)$")
+
+
+class StrategyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    definition: dict[str, Any] = Field(default_factory=dict)
+
+
+class StrategyUpdateIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    definition: dict[str, Any] | None = None
+
+
+class StrategyEnableIn(BaseModel):
+    enabled: bool
+
+
+class StrategyBacktestIn(BaseModel):
+    symbol: str = Field(default="AAPL", min_length=1, max_length=24)
+    period: str = Field(default="2Y", max_length=8)
+
+
+class StrategyAdhocBacktestIn(BaseModel):
+    definition: dict[str, Any] = Field(default_factory=dict)
+    symbol: str = Field(default="AAPL", min_length=1, max_length=24)
+    period: str = Field(default="2Y", max_length=8)
+
+
+class StrategyAutorunIn(BaseModel):
+    enabled: bool
+    interval_sec: int | None = Field(default=None, ge=60, le=3600)
+
+
 # ── Login throttle (defense-in-depth against local brute force) ─────────────
 
 _LOGIN_ATTEMPTS: dict[str, list[float]] = {}
@@ -211,8 +266,10 @@ def auth_status() -> dict[str, Any]:
 
 
 @app.get("/api/config-status")
-def config_status(_user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
-    # Authenticated-only: tells the UI which optional integrations are active.
+def config_status(user: dict[str, Any] = Depends(require_view)) -> dict[str, Any]:
+    # 게스트는 통합 설정을 보지 않는다(전부 미설정으로 응답 — 정보 누출 0, 토큰 검증은 통과).
+    if user.get("role") == "guest":
+        return {"geminiConfigured": False, "dartConfigured": False, "liveTradingEnabled": False, "guest": True}
     return {
         "geminiConfigured": get_api_key("gemini") is not None,
         "dartConfigured": get_api_key("dart") is not None,
@@ -237,6 +294,13 @@ def auth_login(payload: LoginIn, request: Request) -> dict[str, Any]:
     return {"token": create_token(user), "status": "ok"}
 
 
+@app.post("/api/auth/guest")
+def auth_guest() -> dict[str, Any]:
+    """키/비번 없이 읽기전용 둘러보기 토큰 발급. 시장·뉴스·공시 데이터만 접근 가능.
+    자동전략·포트폴리오·주문·키 관리는 마스터 로그인 필요."""
+    return {"token": create_guest_token(), "role": "guest"}
+
+
 @app.post("/api/auth/change-password")
 def auth_change_password(payload: ChangePasswordIn, _user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     user = change_master(payload.current_password, payload.new_password)
@@ -248,14 +312,14 @@ def auth_change_password(payload: ChangePasswordIn, _user: dict[str, Any] = Depe
 
 
 @app.get("/api/market/overview")
-def api_market_overview(_user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+def api_market_overview(_user: dict[str, Any] = Depends(require_view)) -> dict[str, Any]:
     return market_overview()
 
 
 @app.get("/api/market/quotes")
 def api_quotes(
     symbols: str = Query(default="AAPL,MSFT,NVDA,005930.KS,SPY,QQQ", max_length=512),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return {"quotes": quotes(symbols.split(","))}
 
@@ -266,7 +330,7 @@ def api_korea_universe(
     query: str = Query(default="", max_length=64),
     limit: int = Query(default=100, ge=1, le=500),
     source: str = Query(default="auto", pattern="^(auto|naver|snapshot)$"),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return korea_universe(market=market, query=query, limit=limit, source=source)
 
@@ -276,7 +340,7 @@ def api_chart(
     symbol: str = Query(default="AAPL", max_length=24),
     period: str = Query(default="1Y", max_length=8),
     interval: str = Query(default="1D", max_length=8),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return historical_chart(symbol, period, interval)
 
@@ -284,7 +348,7 @@ def api_chart(
 @app.get("/api/market/heatmap")
 def api_heatmap(
     market: str = Query(default="NASDAQ100", pattern="^(NASDAQ100|KOSPI|nasdaq100|kospi)$"),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return market_heatmap(market)
 
@@ -292,20 +356,20 @@ def api_heatmap(
 @app.get("/api/market/search")
 def api_search(
     q: str = Query(default="", max_length=64),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return search_symbols(q)
 
 
 @app.get("/api/market/fx")
-def api_fx(_user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+def api_fx(_user: dict[str, Any] = Depends(require_view)) -> dict[str, Any]:
     return fx_rates()
 
 
 @app.get("/api/market/calendar")
 def api_calendar(
     symbol: str = Query(default="AAPL", max_length=24),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return equity_calendar(symbol)
 
@@ -313,7 +377,7 @@ def api_calendar(
 @app.get("/api/options")
 def api_options(
     symbol: str = Query(default="AAPL", max_length=24),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return options_chain(symbol)
 
@@ -323,7 +387,7 @@ async def api_news(
     symbol: str = Query(default="AAPL", max_length=24),
     query: str = Query(default="", max_length=64),
     limit: int = Query(default=12, ge=1, le=30),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return await get_news(symbol, query, limit)
 
@@ -332,7 +396,7 @@ async def api_news(
 async def api_sec(
     symbol: str = Query(default="AAPL", max_length=24),
     limit: int = Query(default=12, ge=1, le=30),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     return await sec_filings(symbol, limit)
 
@@ -342,7 +406,7 @@ async def api_dart(
     corp_code: str | None = Query(default=None, max_length=8),
     symbol: str | None = Query(default=None, max_length=24),
     limit: int = Query(default=12, ge=1, le=30),
-    _user: dict[str, Any] = Depends(require_auth),
+    _user: dict[str, Any] = Depends(require_view),
 ) -> dict[str, Any]:
     if corp_code is not None and not re.fullmatch(r"\d{8}", corp_code):
         raise HTTPException(status_code=422, detail="corp_code must be 8 digits")
@@ -518,7 +582,7 @@ def summary(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
 
 
 @app.get("/api/brokers")
-def broker_providers(_user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+def broker_providers(_user: dict[str, Any] = Depends(require_view)) -> dict[str, Any]:
     return {
         "liveTradingEnabled": settings.live_trading_enabled,
         "safety": "기본은 Paper Trading입니다. 실거래는 LIVE_TRADING_ENABLED=true 및 사용자별 명시 설정 없이는 실행하지 않습니다.",
@@ -655,6 +719,22 @@ def automation_stop(user: dict[str, Any] = Depends(require_auth)) -> dict[str, A
     return auto_service.stop(user["id"])
 
 
+@app.get("/api/automation/settings")
+def automation_get_settings(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_service.get_settings(user["id"])
+
+
+@app.post("/api/automation/settings")
+def automation_save_settings(payload: AutoSettingsIn, user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_service.save_settings(user["id"], payload.model_dump(exclude_none=True))
+
+
+@app.post("/api/automation/seed")
+def automation_set_seed(payload: AutoSeedIn, user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    # paper 전용. 시드 변경은 시뮬 베이스라인을 초기화한다.
+    return auto_service.set_seed(user["id"], payload.seed_krw)
+
+
 @app.post("/api/automation/run-once")
 def automation_run_once(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     return auto_service.run_once(user["id"], trigger="manual")
@@ -663,6 +743,7 @@ def automation_run_once(user: dict[str, Any] = Depends(require_auth)) -> dict[st
 @app.get("/api/automation/report")
 def automation_report(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     uid = user["id"]
+    mode = auto_service.broker_mode(uid)
     return {
         "performance": auto_perf.compute(uid),
         "promotion": auto_perf.promotion_check(uid),
@@ -670,6 +751,12 @@ def automation_report(user: dict[str, Any] = Depends(require_auth)) -> dict[str,
         "recentOrders": auto_store.recent_orders(uid, 30),
         "paperOnly": True,
         "liveTradingImplemented": False,
+        "brokerMode": mode,
+        # 공식 30일 검증은 내부 sim 장부(filled 주문 + 스냅샷)만 집계. KIS 모드 매매는 제외.
+        "promotionAppliesToKisMock": False,
+        "promotionNote": ("현재 KIS 모의 모드 — 이 리포트의 30일 검증은 내부 sim 장부만 반영하며 "
+                          "KIS 매매는 집계되지 않습니다." if mode == "kis_mock"
+                          else "내부 PaperBroker 장부 기준 30일 검증."),
     }
 
 
@@ -682,6 +769,113 @@ def automation_audit(user: dict[str, Any] = Depends(require_auth)) -> dict[str, 
 @app.get("/api/automation/promotion-check")
 def automation_promotion(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     return auto_perf.promotion_check(user["id"])
+
+
+# ── 사용자 전략 빌더 (Paper. 실거래 경로 없음) ──────────────────────────────
+
+
+@app.get("/api/strategies/meta")
+def strategies_meta(_user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_strategy.builder_meta()
+
+
+@app.get("/api/strategies")
+def strategies_list(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return {"strategies": auto_store.list_strategies(user["id"])}
+
+
+@app.post("/api/strategies")
+def strategies_create(payload: StrategyIn, user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    sid = auto_store.create_strategy(user["id"], name=payload.name, definition=payload.definition)
+    return auto_store.get_strategy(user["id"], sid) or {"id": sid}
+
+
+# literal 경로(runs/autorun)는 반드시 /{strategy_id} 보다 먼저 — 안 그러면 int 변환 422로 셰도잉됨.
+@app.get("/api/strategies/runs")
+def strategies_runs(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return {"runs": auto_store.recent_runs(user["id"], 20)}
+
+
+@app.get("/api/strategies/autorun")
+def strategies_autorun_get(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    uid = user["id"]
+    raw = auto_store.get_settings_raw(uid)
+    mode = auto_service.broker_mode(uid)
+    return {
+        "enabled": bool(raw.get("strategy_autorun")),
+        "intervalSec": int(raw.get("strategy_interval_sec") or 300),
+        "enabledStrategies": len(auto_store.enabled_strategies(uid)),
+        "brokerMode": mode,
+        "builderSupported": mode != "kis_mock",  # KIS 모드에선 전략 빌더 미지원(내부 sim 전용)
+        "activeEngine": auto_service.active_engine(uid),
+        "note": "자동 실행은 이 앱(로컬)이 떠 있는 동안만 · 정규장 시간 · 활성 엔진 1개만. 전략 빌더는 내부 시뮬 전용.",
+    }
+
+
+@app.get("/api/strategies/{strategy_id}")
+def strategies_get(strategy_id: int, user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    s = auto_store.get_strategy(user["id"], strategy_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="strategy_not_found")
+    return s
+
+
+@app.put("/api/strategies/{strategy_id}")
+def strategies_update(strategy_id: int, payload: StrategyUpdateIn,
+                      user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    if not auto_store.get_strategy(user["id"], strategy_id):
+        raise HTTPException(status_code=404, detail="strategy_not_found")
+    auto_store.update_strategy(user["id"], strategy_id, name=payload.name, definition=payload.definition)
+    return auto_store.get_strategy(user["id"], strategy_id) or {}
+
+
+@app.delete("/api/strategies/{strategy_id}")
+def strategies_delete(strategy_id: int, user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    auto_store.delete_strategy(user["id"], strategy_id)
+    return {"status": "deleted"}
+
+
+@app.post("/api/strategies/{strategy_id}/enable")
+def strategies_enable(strategy_id: int, payload: StrategyEnableIn,
+                      user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    if not auto_store.get_strategy(user["id"], strategy_id):
+        raise HTTPException(status_code=404, detail="strategy_not_found")
+    auto_store.set_strategy_enabled(user["id"], strategy_id, payload.enabled)
+    return auto_store.get_strategy(user["id"], strategy_id) or {}
+
+
+@app.post("/api/strategies/{strategy_id}/backtest")
+def strategies_backtest(strategy_id: int, payload: StrategyBacktestIn,
+                        user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_strategy.backtest_and_save(user["id"], strategy_id, payload.symbol, payload.period)
+
+
+@app.post("/api/strategies/backtest")
+def strategies_backtest_adhoc(payload: StrategyAdhocBacktestIn,
+                              _user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    return auto_strategy.backtest_definition(payload.definition, payload.symbol, payload.period)
+
+
+@app.post("/api/strategies/run-once")
+def strategies_run_once(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    # 활성 전략 1회 평가 + 내부 PaperBroker 체결.
+    return auto_strategy.run_strategies_once(user["id"], trigger="manual")
+
+
+@app.post("/api/strategies/autorun")
+def strategies_autorun_set(payload: StrategyAutorunIn, user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    raw = auto_store.get_settings_raw(user["id"])
+    raw["strategy_autorun"] = bool(payload.enabled)
+    if payload.interval_sec is not None:
+        raw["strategy_interval_sec"] = int(payload.interval_sec)
+    auto_store.save_settings(user["id"], raw)
+    return strategies_autorun_get(user)
+
+
+@app.on_event("startup")
+async def _start_scheduler() -> None:
+    # 전략 자동 실행 루프(설정에서 켜져 있을 때만 동작). 로컬 앱 생명주기 동안만.
+    auto_scheduler.start()
 
 
 # ── Static frontend ────────────────────────────────────────────────────────

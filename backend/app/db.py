@@ -16,10 +16,14 @@ def _ensure_parent(path: Path) -> None:
 @contextmanager
 def get_db() -> Iterator[sqlite3.Connection]:
     _ensure_parent(settings.database_path)
-    con = sqlite3.connect(settings.database_path)
+    # timeout: 동시 writer(스케줄러 스레드 + 요청 스레드) 락 대기. WAL: 읽기-쓰기 동시성.
+    con = sqlite3.connect(settings.database_path, timeout=10.0)
     con.row_factory = sqlite3.Row
     try:
         con.execute("PRAGMA foreign_keys = ON")
+        con.execute("PRAGMA busy_timeout = 10000")
+        con.execute("PRAGMA journal_mode = WAL")
+        con.execute("PRAGMA synchronous = NORMAL")
         yield con
         con.commit()
     finally:
@@ -142,6 +146,18 @@ def init_db() -> None:
               FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS user_strategies (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              name TEXT NOT NULL,
+              enabled INTEGER NOT NULL DEFAULT 0,         -- on/off
+              definition_json TEXT NOT NULL DEFAULT '{}', -- 진입/청산/손절익절/유니버스/사이징/타임프레임
+              last_backtest_json TEXT,                    -- 최근 백테스트 결과
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS automation_positions (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               user_id INTEGER NOT NULL,
@@ -255,3 +271,15 @@ def init_db() -> None:
         cols = {row["name"] for row in con.execute("PRAGMA table_info(users)").fetchall()}
         if "token_version" not in cols:
             con.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
+
+        # Schema-drift migration: 일부 기존 DB는 user_strategies를 config_json으로 만들었다.
+        # canonical 컬럼은 definition_json. 누락 시 추가하고 config_json 내용을 복사한다.
+        scols = {row["name"] for row in con.execute("PRAGMA table_info(user_strategies)").fetchall()}
+        if scols:  # 테이블 존재
+            if "definition_json" not in scols:
+                con.execute("ALTER TABLE user_strategies ADD COLUMN definition_json TEXT NOT NULL DEFAULT '{}'")
+                if "config_json" in scols:
+                    con.execute("UPDATE user_strategies SET definition_json = config_json "
+                                "WHERE (definition_json IS NULL OR definition_json = '{}') AND config_json IS NOT NULL")
+            if "last_backtest_json" not in scols:
+                con.execute("ALTER TABLE user_strategies ADD COLUMN last_backtest_json TEXT")

@@ -20,10 +20,16 @@ import httpx
 # 모의투자 전용 도메인 (실전 도메인 사용 금지)
 KIS_MOCK_BASE = "https://openapivts.koreainvestment.com:29443"
 
-# 모의투자 tr_id (현행 2025 샘플 기준)
+# 모의투자 tr_id (현행 2025 샘플 기준) — 국내주식
 TR_BUY = "VTTC0012U"
 TR_SELL = "VTTC0011U"
 TR_BALANCE = "VTTC8434R"
+
+# 모의투자 tr_id — 해외주식(미국). 지정가(00)만 지원, 시장가 불가.
+# 출처: koreainvestment/open-trading-api (overseas_stock).
+TR_OVRS_BUY = "VTTT1002U"
+TR_OVRS_SELL = "VTTT1006U"
+TR_OVRS_BALANCE = "VTTS3012R"
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) KoreanFinanceTerminal/0.1"
 
@@ -271,6 +277,136 @@ async def inquire_balance(raw_credential: str | None) -> dict[str, Any]:
         "totalEval": _to_float(summary.get("tot_evlu_amt")),
         "netAsset": _to_float(summary.get("nass_amt")),
         "totalPnl": _to_float(summary.get("evlu_pfls_smtl_amt")),
+        "holdings": holdings,
+    }
+
+
+# ── 해외주식(미국) 모의투자 ─────────────────────────────────────────────────
+
+# NYSE 상장으로 알려진 대표 티커(보수적). 그 외는 NASD로 본다.
+# 우리 자동전략 미국 유니버스는 NASDAQ100이라 대부분 NASD다.
+_NYSE_HINT = {
+    "BA", "KO", "JPM", "WMT", "DIS", "V", "MA", "JNJ", "PG", "XOM", "CVX",
+    "BRK.B", "UNH", "HD", "BAC", "PFE", "T", "VZ", "NKE", "MCD", "CRM", "ORCL",
+}
+
+
+def overseas_exchange(symbol: str) -> str:
+    """티커 → KIS 해외거래소코드. 기본 NASD, 알려진 NYSE 티커만 NYSE."""
+    s = (symbol or "").upper().split(".")[0]
+    return "NYSE" if s in _NYSE_HINT else "NASD"
+
+
+async def submit_overseas_order(
+    raw_credential: str | None,
+    symbol: str,
+    side: str,
+    quantity: float,
+    limit_price: float,
+    exchange: str | None = None,
+) -> dict[str, Any]:
+    """미국주식 모의 지정가 주문(시장가 불가). 성공 시 주문번호 반환.
+
+    KIS 모의 해외는 ORD_DVSN='00'(지정가)만 허용하므로 limit_price 필수.
+    미국 정규장(09:30~16:00 ET) 외에는 접수되어도 체결되지 않을 수 있다.
+    """
+    cred = parse_credential(raw_credential)
+    ticker = (symbol or "").upper().split(".")[0]
+    if not ticker:
+        raise KisError("미국주식 티커가 필요합니다 (예: AAPL).")
+    qty = int(quantity)
+    if qty <= 0:
+        raise KisError("수량은 1 이상이어야 합니다.")
+    if not limit_price or limit_price <= 0:
+        raise KisError("해외 모의는 지정가만 가능 — 주문단가가 필요합니다.")
+    excg = (exchange or overseas_exchange(ticker)).upper()
+    tr_id = TR_OVRS_BUY if side == "buy" else TR_OVRS_SELL
+    token = await _get_token(cred["appkey"], cred["appsecret"])
+    body = {
+        "CANO": cred["cano"],
+        "ACNT_PRDT_CD": cred["acnt_prdt_cd"],
+        "OVRS_EXCG_CD": excg,
+        "PDNO": ticker,
+        "ORD_QTY": str(qty),
+        "OVRS_ORD_UNPR": f"{float(limit_price):.2f}",
+        "ORD_DVSN": "00",  # 지정가 고정(모의 제약)
+        "SLL_TYPE": "" if side == "buy" else "00",
+        "ORD_SVR_DVSN_CD": "0",
+        "CTAC_TLNO": "",
+        "MGCO_APTM_ODNO": "",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{KIS_MOCK_BASE}/uapi/overseas-stock/v1/trading/order",
+            headers=_base_headers(token, cred, tr_id),
+            json=body,
+        )
+    data = resp.json() if resp.content else {}
+    if data.get("rt_cd") != "0":
+        raise KisError(data.get("msg1") or f"해외 주문 거부 (HTTP {resp.status_code})")
+    out = data.get("output") or {}
+    return {
+        "status": "accepted_kis_mock",
+        "mode": "kis_mock_overseas",
+        "orderNo": out.get("ODNO"),
+        "orderTime": out.get("ORD_TMD"),
+        "message": data.get("msg1"),
+        "symbol": ticker,
+        "exchange": excg,
+        "side": side,
+        "quantity": qty,
+        "orderType": "limit",
+        "limitPrice": float(limit_price),
+    }
+
+
+async def inquire_overseas_balance(raw_credential: str | None, exchange: str = "NASD") -> dict[str, Any]:
+    """미국주식 모의 잔고 조회(거래소별). 보유종목 + 손익 요약."""
+    cred = parse_credential(raw_credential)
+    token = await _get_token(cred["appkey"], cred["appsecret"])
+    params = {
+        "CANO": cred["cano"],
+        "ACNT_PRDT_CD": cred["acnt_prdt_cd"],
+        "OVRS_EXCG_CD": exchange,
+        "TR_CRCY_CD": "USD",
+        "CTX_AREA_FK200": "",
+        "CTX_AREA_NK200": "",
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{KIS_MOCK_BASE}/uapi/overseas-stock/v1/trading/inquire-balance",
+            headers=_base_headers(token, cred, TR_OVRS_BALANCE),
+            params=params,
+        )
+    data = resp.json() if resp.content else {}
+    if data.get("rt_cd") != "0":
+        raise KisError(data.get("msg1") or f"해외 잔고 조회 실패 (HTTP {resp.status_code})")
+    summary = data.get("output2") or {}
+    if isinstance(summary, list):
+        summary = summary[0] if summary else {}
+    holdings = []
+    for row in data.get("output1") or []:
+        if int(float(row.get("ovrs_cblc_qty") or 0)) <= 0:
+            continue
+        holdings.append({
+            "symbol": row.get("ovrs_pdno"),
+            "name": row.get("ovrs_item_name"),
+            "quantity": _to_int(row.get("ovrs_cblc_qty")),
+            "avgPrice": _to_float(row.get("pchs_avg_pric")),
+            "currentPrice": _to_float(row.get("now_pric2")),
+            "evalAmount": _to_float(row.get("ovrs_stck_evlu_amt")),
+            "pnl": _to_float(row.get("frcr_evlu_pfls_amt")),
+            "pnlPercent": _to_float(row.get("evlu_pfls_rt")),
+            "exchange": row.get("ovrs_excg_cd"),
+            "currency": row.get("tr_crcy_cd") or "USD",
+        })
+    return {
+        "status": "ok",
+        "mode": "kis_mock_overseas",
+        "exchange": exchange,
+        "totalEvalPnl": _to_float(summary.get("tot_evlu_pfls_amt")),
+        "totalProfitRate": _to_float(summary.get("tot_pftrt")),
+        "buyAmountUsd": _to_float(summary.get("frcr_buy_amt_smtl1")),
         "holdings": holdings,
     }
 

@@ -9,7 +9,6 @@ import {
   KeyRound,
   LayoutDashboard,
   Lock,
-  Maximize2,
   Newspaper,
   PanelsLeftRight,
   RefreshCw,
@@ -152,7 +151,7 @@ type PortfolioSummary = {
   warnings?: string[]
 }
 
-type TabId = 'markets' | 'heatmap' | 'monitor' | 'chart' | 'news' | 'portfolio' | 'auto' | 'options' | 'orders' | 'ai'
+type TabId = 'markets' | 'heatmap' | 'monitor' | 'chart' | 'news' | 'research' | 'portfolio' | 'manual' | 'auto' | 'strategy' | 'options' | 'orders' | 'ai'
 type ColumnId = 'left' | 'center' | 'right'
 
 type LayoutState = {
@@ -164,23 +163,28 @@ type LayoutState = {
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 const POLL_MS = 180000 // 시세 자동 갱신 주기 (3분)
 
+// 탭 정리(11→6): 히트맵·모니터·뉴스·옵션·AI는 '리서치'로, 주문은 '시장' 우측으로 통합.
 const tabs: Array<{ id: TabId; label: string }> = [
   { id: 'markets', label: '시장' },
-  { id: 'heatmap', label: '히트맵' },
-  { id: 'monitor', label: '모니터' },
   { id: 'chart', label: '차트' },
-  { id: 'news', label: '뉴스' },
+  { id: 'research', label: '리서치' },
   { id: 'portfolio', label: '포트폴리오' },
+  { id: 'manual', label: '수동' },
+  { id: 'strategy', label: '전략 빌더' },
   { id: 'auto', label: '자동전략' },
-  { id: 'options', label: '옵션' },
-  { id: 'orders', label: '주문' },
-  { id: 'ai', label: 'AI' },
 ]
+
+// 게스트(데모) 모드: 읽기전용 시장 데이터만. 마스터 전용 탭/위젯은 숨긴다.
+const GUEST_TABS: TabId[] = ['markets', 'chart', 'research']
+const GUEST_BLOCKED_WIDGETS = new Set<string>([
+  'order', 'ai', 'portfolio', 'portfolioRisk', 'manualPortfolio', 'manualRisk',
+  'portfolioControls', 'autoStrategy', 'paperOrdersPolicy', 'dataStatus',
+])
 
 const defaultLayout: LayoutState = {
   panels: { left: 260, right: 360 },
   widgetHeights: {
-    chart: 520,
+    chart: 640,
     heatmap: 680,
     koreaUniverse: 430,
     news: 265,
@@ -188,7 +192,7 @@ const defaultLayout: LayoutState = {
     order: 280,
     ai: 260,
     fxRates: 196,
-    multiChartGrid: 780,
+    multiChartGrid: 960,
     autoStrategy: 760,
   },
   tabs: {
@@ -218,14 +222,29 @@ const defaultLayout: LayoutState = {
       right: ['ai', 'earnings'],
     },
     portfolio: {
-      left: ['portfolioControls', 'fxRates', 'watchGrid'],
+      left: ['fxRates', 'watchGrid'],
       center: ['portfolio', 'portfolioRisk'],
       right: ['ai', 'dataStatus'],
     },
+    manual: {
+      left: ['portfolioControls', 'fxRates', 'watchGrid'],
+      center: ['manualPortfolio', 'manualRisk'],
+      right: ['ai', 'dataStatus'],
+    },
+    research: {
+      left: ['favorites', 'watchGrid', 'dataStatus'],
+      center: ['heatmap', 'news', 'optionsFlow'],
+      right: ['monitorGrid', 'ai', 'earnings'],
+    },
+    strategy: {
+      left: ['favorites', 'koreaUniverse', 'watchGrid'],
+      center: ['strategyBuilder'],
+      right: ['dataStatus', 'paperOrdersPolicy'],
+    },
     auto: {
-      left: ['favorites', 'watchGrid'],
+      left: ['favorites', 'watchGrid', 'brokerStatus'],
       center: ['autoStrategy'],
-      right: ['dataStatus', 'ai'],
+      right: ['paperOrdersPolicy', 'dataStatus', 'ai'],
     },
     options: {
       left: ['watchGrid', 'chartControls'],
@@ -267,17 +286,21 @@ const widgetTitles: Record<string, { title: string; icon: ReactNode }> = {
   dataStatus: { title: 'DATA PROVIDER STATUS', icon: <Database size={14} /> },
   chartControls: { title: 'CHART CONTROLS', icon: <Settings size={14} /> },
   indicatorStack: { title: 'RSI / MACD DETAIL', icon: <Activity size={14} /> },
-  portfolioControls: { title: '보유 · 매수 입력', icon: <WalletCards size={14} /> },
-  portfolio: { title: 'PORTFOLIO', icon: <WalletCards size={14} /> },
-  portfolioRisk: { title: 'PORTFOLIO RISK', icon: <ShieldAlert size={14} /> },
+  portfolioControls: { title: '보유 · 매수 입력 (수동)', icon: <WalletCards size={14} /> },
+  portfolio: { title: 'PORTFOLIO · 자동투자', icon: <WalletCards size={14} /> },
+  portfolioRisk: { title: 'PORTFOLIO RISK · 자동투자', icon: <ShieldAlert size={14} /> },
+  manualPortfolio: { title: '수동 포트폴리오', icon: <WalletCards size={14} /> },
+  manualRisk: { title: '수동 리스크', icon: <ShieldAlert size={14} /> },
   optionsFlow: { title: 'OPTIONS FLOW INTELLIGENCE', icon: <Activity size={14} /> },
   brokerStatus: { title: 'BROKER CONNECTORS', icon: <Lock size={14} /> },
   paperOrdersPolicy: { title: 'PAPER / LIVE TRADING GUARD', icon: <ShieldAlert size={14} /> },
   autoStrategy: { title: '자동전략 / AUTO STRATEGY', icon: <Bot size={14} /> },
+  strategyBuilder: { title: '전략 빌더 / STRATEGY BUILDER', icon: <Settings size={14} /> },
 }
 
-function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
+function Terminal({ token, onLock, guest = false }: { token: string; onLock: () => void; guest?: boolean }) {
   const [activeTab, setActiveTab] = useState<TabId>('markets')
+  const [tourSeen, setTourSeen] = useState(() => localStorage.getItem('kft_tour_seen') === '1')
   const [selectedSymbol, setSelectedSymbol] = useState('AAPL')
   const [chartSymbols, setChartSymbols] = useState<string[]>(['AAPL'])
   const [command, setCommand] = useState('AAPL')
@@ -418,7 +441,8 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
   }, [chartInterval, period, selectedSymbol])
 
   const loadPortfolio = useCallback(async () => {
-    if (!token) {
+    if (!token || guest) {
+      // 게스트는 마스터 전용 포트폴리오 라우트를 호출하지 않는다(401 → 강제 잠금 방지).
       setPortfolio(null)
       return
     }
@@ -428,7 +452,7 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
     } catch {
       setPortfolio(null)
     }
-  }, [authHeaders, token])
+  }, [authHeaders, token, guest])
 
   useEffect(() => {
     void loadMarket()
@@ -526,10 +550,10 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
       if (!rect) return
       updateLayout((current) => {
         if (dragPanel === 'left') {
-          const left = clamp(event.clientX - rect.left, 210, 430)
+          const left = clamp(event.clientX - rect.left, 0, 620)
           return { ...current, panels: { ...current.panels, left } }
         }
-        const right = clamp(rect.right - event.clientX, 280, 520)
+        const right = clamp(rect.right - event.clientX, 0, 760)
         return { ...current, panels: { ...current.panels, right } }
       })
     }
@@ -598,9 +622,10 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
   }
 
   const onWidgetHeight = (id: string, height: number) => {
-    if (id === 'heatmap' || id === 'multiChartGrid' || id === 'autoStrategy') return // fixed-height widget; manages its own size
+    if (id === 'heatmap' || id === 'autoStrategy') return // fixed-height widget; manages its own size
     if (height < 120) return
     if (id === 'chart' && height < 440) return
+    if (id === 'multiChartGrid' && height < 460) return // 멀티차트는 사용자 리사이즈 허용(최소 460)
     setLayout((current) => ({
       ...current,
       widgetHeights: { ...current.widgetHeights, [id]: Math.round(height) },
@@ -610,6 +635,10 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
   const saveVisibleLayout = () => {
     void persistLayout(layout)
   }
+
+  useEffect(() => {
+    if (guest && !GUEST_TABS.includes(activeTab)) setActiveTab('markets')
+  }, [guest, activeTab])
 
   const renderWidget = (id: string) => {
     const common = {
@@ -702,6 +731,10 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
         return <PortfolioPanel {...common} />
       case 'portfolioRisk':
         return <PortfolioRisk {...common} />
+      case 'manualPortfolio':
+        return <ManualPortfolioPanel {...common} />
+      case 'manualRisk':
+        return <ManualPortfolioRisk {...common} />
       case 'optionsFlow':
         return <OptionsPanel {...common} />
       case 'brokerStatus':
@@ -710,6 +743,8 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
         return <PaperPolicy />
       case 'autoStrategy':
         return <AutoStrategyPanel {...common} />
+      case 'strategyBuilder':
+        return <StrategyBuilder {...common} />
       default:
         return <EmptyState text="위젯 없음" />
     }
@@ -722,7 +757,7 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
           <span className="brand-mark">KT</span>
           <span>
             <strong>한국어 금융 터미널</strong>
-            <small>US/KR EQUITY INTEL</small>
+            <small>KR·US 리서치 + 페이퍼 연습 · 지연데이터(실시간 트레이딩 아님)</small>
           </span>
         </div>
         <nav className="global-menu">
@@ -734,11 +769,9 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
                 setActiveTab(
                   item === 'Portfolio'
                     ? 'portfolio'
-                    : item === 'AI'
-                      ? 'ai'
-                      : item === 'Maps'
-                        ? 'heatmap'
-                        : 'markets',
+                    : item === 'Markets'
+                      ? 'markets'
+                      : 'research', // Maps·Research·Tools·AI → 리서치 탭
                 )
               }
             >
@@ -809,28 +842,38 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
         {!overview && <span className="strip-loading">시장 데이터 로딩 중...</span>}
       </section>
 
+      {guest && (
+        <div className="guest-banner">
+          <span>🔎 <strong>데모 모드</strong> · 실시간 시장 데이터 둘러보기. 로그인하면 잠금해제: <em>자동전략 · 포트폴리오 · 주문 · AI 요약 · KIS 실시간호가/모의매매</em></span>
+          <button type="button" onClick={onLock}>로그인 / 키 입력</button>
+        </div>
+      )}
+
       <nav className="tab-row">
-        {tabs.map((tab) => (
+        {(guest ? tabs.filter((t) => GUEST_TABS.includes(t.id)) : tabs).map((tab) => (
           <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} type="button" onClick={() => setActiveTab(tab.id)}>
             {tab.label}
           </button>
         ))}
-        <button className="save-layout" type="button" onClick={saveVisibleLayout}>
-          <Save size={13} /> 레이아웃 저장
-        </button>
+        {!guest && (
+          <button className="save-layout" type="button" onClick={saveVisibleLayout}>
+            <Save size={13} /> 레이아웃 저장
+          </button>
+        )}
       </nav>
 
       <main
         ref={shellRef}
         className="terminal-shell"
         style={{
-          gridTemplateColumns: `${layout.panels.left}px 7px minmax(0, 1fr) 7px ${layout.panels.right}px`,
+          gridTemplateColumns: `${layout.panels.left}px 9px minmax(0, 1fr) 9px ${layout.panels.right}px`,
         }}
       >
         <Column
           id="left"
           layout={layout}
           activeTab={activeTab}
+          guest={guest}
           dragWidget={dragWidget}
           setDragWidget={setDragWidget}
           reorderWidget={reorderWidget}
@@ -844,6 +887,7 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
           id="center"
           layout={layout}
           activeTab={activeTab}
+          guest={guest}
           dragWidget={dragWidget}
           setDragWidget={setDragWidget}
           reorderWidget={reorderWidget}
@@ -857,6 +901,7 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
           id="right"
           layout={layout}
           activeTab={activeTab}
+          guest={guest}
           dragWidget={dragWidget}
           setDragWidget={setDragWidget}
           reorderWidget={reorderWidget}
@@ -866,6 +911,33 @@ function Terminal({ token, onLock }: { token: string; onLock: () => void }) {
       </main>
 
       {portfolioFocus && <PortfolioModal portfolio={portfolio} onClose={() => setPortfolioFocus(false)} />}
+      {!guest && !tourSeen && (
+        <FirstRunTour
+          onClose={() => {
+            localStorage.setItem('kft_tour_seen', '1')
+            setTourSeen(true)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function FirstRunTour({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section className="tour-card" onClick={(e) => e.stopPropagation()}>
+        <h2>환영합니다 👋</h2>
+        <p className="tour-sub">KR·US 통합 리서치 + 페이퍼 트레이딩 연습 터미널. 빠르게 둘러보는 법:</p>
+        <ul className="tour-list">
+          <li><b>탭 6개</b> — 시장 · 차트 · 리서치 · 포트폴리오 · 수동 · 자동전략</li>
+          <li><b>레이아웃 조절</b> — 패널 사이 세로 구분선 드래그(폭), 위젯 우하단 모서리 드래그(높이). 다 맞추면 상단 <b>레이아웃 저장</b></li>
+          <li><b>자동전략</b> — 전부 페이퍼(모의). 상세설정에서 시드·전략·체결방식(내부/KIS 모의) 조절</li>
+          <li><b>데이터</b> — 지연/EOD 기준(실시간 트레이딩 아님). 각 위젯에 데이터상태 배지 표시</li>
+          <li><b>키 입력</b> — KIS(실시간호가·모의매매) / Gemini(AI요약) / DART(공시). 전부 선택, 로컬 암호화 저장</li>
+        </ul>
+        <button className="tour-cta" type="button" onClick={onClose}>시작하기</button>
+      </section>
     </div>
   )
 }
@@ -874,13 +946,15 @@ function Column(props: {
   id: ColumnId
   layout: LayoutState
   activeTab: TabId
+  guest?: boolean
   dragWidget: string | null
   setDragWidget: (id: string | null) => void
   reorderWidget: (targetColumn: ColumnId, targetId?: string) => void
   onWidgetHeight: (id: string, height: number) => void
   renderWidget: (id: string) => ReactNode
 }) {
-  const widgets = props.layout.tabs[props.activeTab][props.id]
+  const all = props.layout.tabs[props.activeTab][props.id]
+  const widgets = props.guest ? all.filter((id) => !GUEST_BLOCKED_WIDGETS.has(id)) : all
   return (
     <section className={`terminal-column ${props.id}`} onDragOver={(event) => event.preventDefault()} onDrop={() => props.reorderWidget(props.id)}>
       {widgets.map((id) => (
@@ -2006,31 +2080,33 @@ function PortfolioControls({ token, authHeaders, loadPortfolio, portfolio, setSe
   )
 }
 
-function PortfolioPanel({ portfolio, setPortfolioFocus, setSelectedSymbol, setActiveTab, loadPortfolio }: any) {
-  const openChart = (sym: string) => { setSelectedSymbol?.(sym); setActiveTab?.('chart') }
+function ManualPortfolioPanel({ portfolio, setPortfolioFocus, setSelectedSymbol, setActiveTab, setChartSymbols, setCommand, loadPortfolio }: any) {
+  const openChart = (sym: string) => {
+    setSelectedSymbol?.(sym); setCommand?.(sym); setChartSymbols?.([sym]); setActiveTab?.('chart')
+  }
   if (!portfolio) {
-    return <EmptyState text="로그인하면 포트폴리오 비중·수익률을 한눈에 볼 수 있어요. 왼쪽에서 시작하세요." />
+    return <EmptyState text="로그인하면 수동 포트폴리오 비중·수익률을 볼 수 있어요." />
   }
   const holdings: any[] = portfolio.holdings || []
   if (!holdings.length) {
-    return <EmptyState text="아직 보유 종목이 없어요. 왼쪽 ‘보유 종목 추가’로 첫 종목을 넣어보세요." />
+    return <EmptyState text="아직 수동 보유 종목이 없어요. 왼쪽 ‘보유 · 매수 입력’으로 첫 종목을 넣어보세요." />
   }
   const base = portfolio.baseCurrency || 'KRW'
   const totals = portfolio.totals || {}
   const up = (totals.pnl ?? 0) >= 0
-  // 종목별 비중 — 수동 입력엔 섹터가 없으므로 주린이에게 가장 직관적인 ‘내 돈이 어느 종목에’를 보여줌
   const byHolding = holdings
     .filter((h) => h.weight != null)
     .map((h) => ({ name: h.symbol as string, weight: h.weight as number, value: (h.marketValueBase ?? 0) as number }))
   return (
     <div className="portfolio-panel">
       <div className="portfolio-head">
+        <span className="auto-badge ghost">수동 입력</span>
         <Metric label="투자 원금" value={formatMoney(totals.cost, base)} />
         <Metric label="총 평가금액" value={formatMoney(totals.marketValue, base)} />
         <Metric label="총 손익" value={formatMoney(totals.pnl, base)} tone={up ? 'up' : 'down'} />
         <Metric label="총 수익률" value={totals.pnlPercent == null ? '데이터 없음' : formatPercent(totals.pnlPercent)} tone={up ? 'up' : 'down'} />
         <button className="icon-button" type="button" title="시세 새로고침" onClick={() => loadPortfolio?.()}><RefreshCw size={14} /></button>
-        <button className="icon-button" type="button" title="크게 보기" onClick={() => setPortfolioFocus(true)}><Maximize2 size={14} /></button>
+        {setPortfolioFocus && <button className="icon-button" type="button" title="크게 보기" onClick={() => setPortfolioFocus(true)}>＋</button>}
       </div>
       <div className="pf-note">
         원화 환산 기준
@@ -2060,6 +2136,135 @@ function PortfolioPanel({ portfolio, setPortfolioFocus, setSelectedSymbol, setAc
         })}
       </div>
       <StatusBadge status={portfolio.status} message={portfolio.message} />
+      <DisclaimerNote />
+    </div>
+  )
+}
+
+function ManualPortfolioRisk({ portfolio }: any) {
+  const holdings: any[] = portfolio?.holdings || []
+  if (!portfolio || !holdings.length) return <EmptyState text="수동 보유 종목을 추가하면 집중도·점검 신호가 표시됩니다" />
+  const maxWeight = Math.max(0, ...holdings.map((h) => h.weight ?? 0))
+  const alerts: Array<{ tone: 'down' | 'delayed'; msg: string }> = []
+  if (holdings.length === 1) {
+    alerts.push({ tone: 'down', msg: '한 종목에만 투자 — 분산이 전혀 안 됐습니다. 한 종목 급락 시 계좌 전체가 흔들립니다.' })
+  }
+  if (maxWeight >= 60) {
+    alerts.push({ tone: 'down', msg: `최대 비중 ${maxWeight.toFixed(1)}% — 과도한 집중. 한 종목 의존도가 큽니다.` })
+  } else if (maxWeight >= 40) {
+    alerts.push({ tone: 'delayed', msg: `최대 비중 ${maxWeight.toFixed(1)}% — 집중도 점검 권장.` })
+  }
+  return (
+    <div className="plain-list">
+      <p className="hint">한 종목 비중이 크거나(40%+) 분산이 안 되면 알려드려요. 분산은 손실 위험을 줄이는 기본입니다.</p>
+      {alerts.map((a) => (
+        <div className={`risk-alert ${a.tone === 'down' ? 'severe' : ''}`} key={a.msg}>⚠ {a.msg}</div>
+      ))}
+      {holdings.map((holding: any) => (
+        <div className="status-row" key={holding.id}>
+          <span>{holding.symbol} {holding.weight != null ? `· ${holding.weight}%` : ''}</span>
+          <StatusBadge status={holding.rebalance === '정상' ? 'ok' : 'delayed'} message={holding.rebalance} />
+        </div>
+      ))}
+      {(portfolio.warnings || []).map((warning: string) => <StatusBadge key={warning} status="not_available" message={warning} />)}
+    </div>
+  )
+}
+
+function PortfolioPanel({ authHeaders, setSelectedSymbol, setActiveTab, setChartSymbols, setCommand }: any) {
+  const [auto, setAuto] = useState<AutoStatus | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const openChart = (sym: string) => {
+    setSelectedSymbol?.(sym)
+    setCommand?.(sym)
+    setChartSymbols?.([sym])
+    setActiveTab?.('chart')
+  }
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await apiFetch('/api/automation/status', { headers: authHeaders })
+      setAuto(data)
+      setErr(null)
+    } catch (e: any) {
+      setErr(e?.message || '자동투자 내역 로딩 실패')
+    } finally {
+      setLoading(false)
+    }
+  }, [authHeaders])
+
+  useEffect(() => { void load() }, [load])
+
+  if (!auto) {
+    return <EmptyState text={err || '자동투자 내역 로딩 중…'} />
+  }
+
+  const positions = auto.positions || []
+  const seed = auto.seedKrw ?? 0
+  const total = auto.totalValueKrw ?? 0
+  const cash = auto.cashKrw ?? 0
+  const posVal = auto.positionsValueKrw ?? 0
+  const pnl = total - seed
+  const up = pnl >= 0
+  const cumUp = (auto.cumReturn ?? 0) >= 0
+  // 비중: 총자산(현금 포함) 기준. 현금도 슬라이스로 표시해 ‘얼마가 어디에’를 직관적으로.
+  const denom = total > 0 ? total : 1
+  const byHolding = [
+    ...positions.filter((p) => p.valueKrw != null).map((p) => ({
+      name: p.symbol, weight: Math.round((((p.valueKrw ?? 0)) / denom) * 1000) / 10, value: p.valueKrw ?? 0,
+    })),
+    ...(cash > 0 ? [{ name: '현금', weight: Math.round((cash / denom) * 1000) / 10, value: cash }] : []),
+  ]
+
+  return (
+    <div className="portfolio-panel">
+      <div className="portfolio-head">
+        <span className="auto-badge paper">PAPER 자동투자</span>
+        <Metric label="시드" value={formatMoney(seed, 'KRW')} />
+        <Metric label="총자산" value={formatMoney(total, 'KRW')} />
+        <Metric label="평가손익" value={formatMoney(pnl, 'KRW')} tone={up ? 'up' : 'down'} />
+        <Metric label="누적 수익률" value={auto.cumReturn == null ? '–' : formatPercent(auto.cumReturn * 100)} tone={cumUp ? 'up' : 'down'} />
+        <button className="icon-button" type="button" title="새로고침" onClick={() => void load()} disabled={loading}><RefreshCw size={14} /></button>
+      </div>
+      <div className="pf-note">
+        {auto.brokerMode === 'kis_mock' ? 'KIS 모의계좌 잔고(국내 KRW + 해외 USD 환산)' : '내부 PaperBroker 내역'}
+        {' · '}현금 {formatMoney(cash, 'KRW')} / 평가 {formatMoney(posVal, 'KRW')}
+        {auto.fxUsdKrw ? ` · USD/KRW ${formatNumber(auto.fxUsdKrw)}` : ''}
+        {auto.halted ? ` · ⛔ 정지(${auto.haltReason || '낙폭 한도'})` : ''}
+        {auto.kisError ? ` · ⚠ ${auto.kisError}` : ''}
+      </div>
+      {!positions.length ? (
+        <EmptyState text="자동전략 보유 종목 없음. ‘자동전략’ 탭에서 시작/1회 실행하면 여기에 표시됩니다." />
+      ) : (
+        <>
+          <div className="pf-alloc-wrap">
+            <DonutChart data={byHolding} title="자산 비중" />
+            <AllocationBars data={byHolding} />
+          </div>
+          <div className="table holdings-table">
+            <div className="table-row head">
+              <span>종목</span><span>보유</span><span>평단</span><span>현재가</span><span>평가액</span><span>비중</span>
+            </div>
+            {positions.map((p) => {
+              const cur = (p.currency || 'KRW').toUpperCase()
+              const w = total > 0 ? Math.round((((p.valueKrw ?? 0)) / total) * 1000) / 10 : null
+              return (
+                <div className="table-row table-row-click" key={p.symbol} role="button" tabIndex={0} title="차트 보기" onClick={() => openChart(p.symbol)}>
+                  <span className="h-sym">{p.symbol}</span>
+                  <span>{formatNumber(p.quantity)}</span>
+                  <span>{p.avgCostNative == null ? '–' : formatMoney(p.avgCostNative, cur)}</span>
+                  <span>{p.price == null ? '–' : formatMoney(p.price, cur)}</span>
+                  <span>{p.valueKrw == null ? '–' : formatMoney(p.valueKrw, 'KRW')}</span>
+                  <span className="h-weight">{w == null ? '–' : `${w}%`}</span>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+      {err && <StatusBadge status="error" message={err} />}
       <DisclaimerNote />
     </div>
   )
@@ -2113,33 +2318,87 @@ function DonutChart({ data, title }: { data: Array<{ name: string; weight: numbe
   )
 }
 
-function PortfolioRisk({ portfolio }: any) {
-  const holdings: any[] = portfolio?.holdings || []
-  if (!portfolio || !holdings.length) return <EmptyState text="보유 종목을 추가하면 집중도·점검 신호가 표시됩니다" />
-  const maxWeight = Math.max(0, ...holdings.map((h) => h.weight ?? 0))
-  // 분산/집중 경고 (책임투자)
+function PortfolioRisk({ authHeaders }: any) {
+  const [auto, setAuto] = useState<AutoStatus | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      setAuto(await apiFetch('/api/automation/status', { headers: authHeaders }))
+      setErr(null)
+    } catch (e: any) {
+      setErr(e?.message || '자동투자 리스크 로딩 실패')
+    }
+  }, [authHeaders])
+
+  useEffect(() => { void load() }, [load])
+
+  if (!auto) return <EmptyState text={err || '자동투자 리스크 로딩 중…'} />
+
+  const positions = auto.positions || []
+  const total = auto.totalValueKrw ?? 0
+  const cash = auto.cashKrw ?? 0
+  const lim = auto.limits || {}
+  const maxSinglePct = (lim.maxSinglePct ?? 0.25) * 100
+  const minCashPct = (lim.minCashPct ?? 0.20) * 100
+  const maxPositions = lim.maxPositions ?? 4
+  const dailyHalt = (lim.dailyLossHalt ?? -0.05) * 100
+  const ddHalt = (lim.totalDrawdownHalt ?? -0.20) * 100
+
+  if (!positions.length && !auto.halted) {
+    return <EmptyState text="자동전략 보유 없음 — 집중도·한도 점검 신호는 매수 후 표시됩니다." />
+  }
+
+  const weights = positions.map((p) => ({ sym: p.symbol, w: total > 0 ? ((p.valueKrw ?? 0) / total) * 100 : 0 }))
+  const maxW = Math.max(0, ...weights.map((x) => x.w))
+  const cashPct = total > 0 ? (cash / total) * 100 : 0
+  const daily = (auto.dailyReturn ?? 0) * 100
+  const dd = (auto.drawdown ?? 0) * 100
+
   const alerts: Array<{ tone: 'down' | 'delayed'; msg: string }> = []
-  if (holdings.length === 1) {
-    alerts.push({ tone: 'down', msg: '한 종목에만 투자 — 분산이 전혀 안 됐습니다. 한 종목 급락 시 계좌 전체가 흔들립니다.' })
+  if (auto.halted) {
+    alerts.push({ tone: 'down', msg: `자동전략 정지 — ${auto.haltReason || '전체 낙폭 한도 도달'}` })
   }
-  if (maxWeight >= 60) {
-    alerts.push({ tone: 'down', msg: `최대 비중 ${maxWeight.toFixed(1)}% — 과도한 집중. 한 종목 의존도가 큽니다.` })
-  } else if (maxWeight >= 40) {
-    alerts.push({ tone: 'delayed', msg: `최대 비중 ${maxWeight.toFixed(1)}% — 집중도 점검 권장.` })
+  if (maxW > maxSinglePct + 0.5) {
+    alerts.push({ tone: 'down', msg: `최대 단일 비중 ${maxW.toFixed(1)}% — 한도 ${maxSinglePct.toFixed(0)}% 초과(시세 변동). 리밸런싱 점검.` })
   }
+  if (cashPct < minCashPct - 0.5) {
+    alerts.push({ tone: 'delayed', msg: `현금 ${cashPct.toFixed(1)}% — 최소 ${minCashPct.toFixed(0)}% 하회.` })
+  }
+  if (dd <= ddHalt) {
+    alerts.push({ tone: 'down', msg: `전체 낙폭 ${dd.toFixed(1)}% — 정지 한도 ${ddHalt.toFixed(0)}% 도달.` })
+  } else if (dd <= ddHalt / 2) {
+    alerts.push({ tone: 'delayed', msg: `전체 낙폭 ${dd.toFixed(1)}% — 정지 한도(${ddHalt.toFixed(0)}%) 절반 경과. 주의.` })
+  }
+  if (daily <= dailyHalt) {
+    alerts.push({ tone: 'down', msg: `오늘 손익 ${daily.toFixed(1)}% — 일손실 한도 ${dailyHalt.toFixed(0)}% 도달(신규 매수 차단).` })
+  }
+  if (positions.length === 1) {
+    alerts.push({ tone: 'delayed', msg: '보유 1종목 — 분산 약함. 한 종목 급락에 취약.' })
+  }
+
   return (
     <div className="plain-list">
-      <p className="hint">한 종목 비중이 크거나(40%+) 분산이 안 되면 알려드려요. 분산은 손실 위험을 줄이는 기본입니다.</p>
+      <p className="hint">자동전략 리스크 한도 대비 점검: 단일 ≤{maxSinglePct.toFixed(0)}% · 현금 ≥{minCashPct.toFixed(0)}% · 최대 {maxPositions}종목 · 일손실 {dailyHalt.toFixed(0)}% · 낙폭 {ddHalt.toFixed(0)}%.</p>
+      {alerts.length === 0 && <div className="risk-alert ok">✓ 한도 내 — 이상 신호 없음</div>}
       {alerts.map((a) => (
         <div className={`risk-alert ${a.tone === 'down' ? 'severe' : ''}`} key={a.msg}>⚠ {a.msg}</div>
       ))}
-      {holdings.map((holding: any) => (
-        <div className="status-row" key={holding.id}>
-          <span>{holding.symbol} {holding.weight != null ? `· ${holding.weight}%` : ''}</span>
-          <StatusBadge status={holding.rebalance === '정상' ? 'ok' : 'delayed'} message={holding.rebalance} />
+      <div className="status-row">
+        <span>보유 종목 수 · {positions.length}/{maxPositions}</span>
+        <StatusBadge status={positions.length <= maxPositions ? 'ok' : 'delayed'} message={positions.length <= maxPositions ? '한도 내' : '초과'} />
+      </div>
+      <div className="status-row">
+        <span>현금 비중 · {cashPct.toFixed(1)}%</span>
+        <StatusBadge status={cashPct >= minCashPct - 0.5 ? 'ok' : 'delayed'} message={cashPct >= minCashPct - 0.5 ? '한도 내' : '하회'} />
+      </div>
+      {weights.map((x) => (
+        <div className="status-row" key={x.sym}>
+          <span>{x.sym} · {x.w.toFixed(1)}%</span>
+          <StatusBadge status={x.w <= maxSinglePct + 0.5 ? 'ok' : 'delayed'} message={x.w <= maxSinglePct + 0.5 ? '정상' : '비중 초과'} />
         </div>
       ))}
-      {(portfolio.warnings || []).map((warning: string) => <StatusBadge key={warning} status="not_available" message={warning} />)}
+      {err && <StatusBadge status="error" message={err} />}
     </div>
   )
 }
@@ -2227,6 +2486,9 @@ type AutoStatus = {
   status?: string
   halted?: boolean
   haltReason?: string | null
+  brokerMode?: string
+  kisNote?: string
+  kisError?: string
   seedKrw?: number
   cashKrw?: number
   positionsValueKrw?: number
@@ -2318,6 +2580,9 @@ function PromoChecklist({ promotion }: { promotion: PromotionCheck | null }) {
           </div>
         )
       })}
+      <div className="promo-caveat">
+        ⚠ 30일·30거래는 <b>메커니즘 점검</b>이지 전략 검증 아님. 통계적으로 얇음(신뢰할 표본은 보통 100+ 거래). 통과해도 수익 보장 아님 — 실거래 전 백테스트·장기 페이퍼 필요.
+      </div>
     </div>
   )
 }
@@ -2381,6 +2646,515 @@ function AutoReportModal({ report, promotion, onClose }: { report: any; promotio
   )
 }
 
+function StrategyBuilder({ authHeaders }: any) {
+  const [meta, setMeta] = useState<any>(null)
+  const [list, setList] = useState<any[]>([])
+  const [draft, setDraft] = useState<any | null>(null) // {id, name, entry[], exit[], stop, take, timeframe}
+  const [msg, setMsg] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [bt, setBt] = useState<any>(null)
+  const [btSymbol, setBtSymbol] = useState('AAPL')
+  const [btPeriod, setBtPeriod] = useState('2Y')
+  const [autorun, setAutorun] = useState<any>(null)
+  const [runs, setRuns] = useState<any[]>([])
+
+  const jsonHeaders = { ...authHeaders, 'Content-Type': 'application/json' }
+
+  const load = useCallback(async () => {
+    try {
+      const [m, l, a, r] = await Promise.all([
+        apiFetch('/api/strategies/meta', { headers: authHeaders }),
+        apiFetch('/api/strategies', { headers: authHeaders }),
+        apiFetch('/api/strategies/autorun', { headers: authHeaders }),
+        apiFetch('/api/strategies/runs', { headers: authHeaders }),
+      ])
+      setMeta(m)
+      setList(l.strategies || [])
+      setAutorun(a)
+      setRuns(r.runs || [])
+      setErr(null)
+    } catch (e: any) {
+      setErr(e?.message || '로딩 실패')
+    }
+  }, [authHeaders])
+
+  const toggleAutorun = async () => {
+    try {
+      const a = await apiFetch('/api/strategies/autorun', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ enabled: !autorun?.enabled }) })
+      setAutorun(a)
+    } catch (e: any) { setErr(e?.message || '자동실행 토글 실패') }
+  }
+
+  const runOnce = async () => {
+    setBusy('run'); setErr(null); setMsg(null)
+    try {
+      const res = await apiFetch('/api/strategies/run-once', { method: 'POST', headers: jsonHeaders })
+      setMsg(res.ran === 0 ? '활성 전략 없음 (전략 ON 필요)' : `실행: ${res.ran}전략 · 신호 ${res.signals} · 주문 ${res.orders} · 차단 ${res.blocked}`)
+      await load()
+    } catch (e: any) { setErr(e?.message || '실행 실패') } finally { setBusy(null) }
+  }
+
+  useEffect(() => { void load() }, [load])
+
+  const blankCond = () => ({ left: 'close', op: '>', right: 'sma20', rmode: 'field' as 'field' | 'num' })
+
+  const toDraft = (s: any) => {
+    const def = s?.definition || {}
+    const conv = (arr: any[]) => (arr || []).map((c) => ({
+      left: c.left, op: c.op,
+      right: typeof c.right === 'number' ? String(c.right) : c.right,
+      rmode: typeof c.right === 'number' ? 'num' : 'field',
+    }))
+    return {
+      id: s?.id ?? null,
+      name: s?.name ?? '새 전략',
+      entry: def.entry ? conv(def.entry) : [blankCond()],
+      exit: def.exit ? conv(def.exit) : [],
+      stop: def.stop_loss_pct != null ? String(Math.abs(def.stop_loss_pct) * 100) : '5',
+      take: def.take_profit_pct != null ? String(def.take_profit_pct * 100) : '10',
+      timeframe: def.timeframe || '1d',
+    }
+  }
+
+  const draftToDefinition = (d: any) => {
+    const conv = (arr: any[]) => arr
+      .filter((c) => c.left && c.op && c.right !== '')
+      .map((c) => ({ left: c.left, op: c.op, right: c.rmode === 'num' ? Number(c.right) : c.right }))
+    return {
+      entry: conv(d.entry),
+      exit: conv(d.exit),
+      stop_loss_pct: d.stop === '' ? null : -Math.abs(Number(d.stop)) / 100,
+      take_profit_pct: d.take === '' ? null : Math.abs(Number(d.take)) / 100,
+      timeframe: d.timeframe,
+    }
+  }
+
+  const save = async () => {
+    if (!draft) return
+    setBusy('save'); setErr(null); setMsg(null)
+    const def = draftToDefinition(draft)
+    if (!def.entry.length) { setErr('진입 조건이 최소 1개 필요합니다.'); setBusy(null); return }
+    try {
+      if (draft.id) {
+        await apiFetch(`/api/strategies/${draft.id}`, { method: 'PUT', headers: jsonHeaders, body: JSON.stringify({ name: draft.name, definition: def }) })
+      } else {
+        const created = await apiFetch('/api/strategies', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ name: draft.name, definition: def }) })
+        setDraft((d: any) => ({ ...d, id: created.id }))
+      }
+      setMsg('저장됨')
+      await load()
+    } catch (e: any) { setErr(e?.message || '저장 실패') } finally { setBusy(null) }
+  }
+
+  const toggleEnable = async (s: any) => {
+    try {
+      await apiFetch(`/api/strategies/${s.id}/enable`, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ enabled: !s.enabled }) })
+      await load()
+    } catch (e: any) { setErr(e?.message || '토글 실패') }
+  }
+
+  const remove = async (s: any) => {
+    if (!window.confirm(`전략 '${s.name}' 삭제?`)) return
+    await apiFetch(`/api/strategies/${s.id}`, { method: 'DELETE', headers: authHeaders })
+    if (draft?.id === s.id) setDraft(null)
+    await load()
+  }
+
+  const runBacktest = async () => {
+    if (!draft) return
+    setBusy('bt'); setErr(null); setBt(null)
+    try {
+      const def = draftToDefinition(draft)
+      const res = await apiFetch('/api/strategies/backtest', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ definition: def, symbol: btSymbol.trim().toUpperCase(), period: btPeriod }) })
+      setBt(res)
+    } catch (e: any) { setErr(e?.message || '백테스트 실패') } finally { setBusy(null) }
+  }
+
+  if (!meta) {
+    return <div className="auto-panel">{err ? <StatusBadge status="error" message={err} /> : <EmptyState text="전략 빌더 로딩 중…" />}</div>
+  }
+
+  const condRows = (which: 'entry' | 'exit') => (
+    <div className="cond-list">
+      {(draft[which] as any[]).map((c, i) => (
+        <div className="cond-row" key={i}>
+          <select value={c.left} onChange={(e) => updateCond(which, i, { left: e.target.value })}>
+            {meta.fields.map((f: any) => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+          <select value={c.op} onChange={(e) => updateCond(which, i, { op: e.target.value })}>
+            {meta.operators.map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <select value={c.rmode} onChange={(e) => updateCond(which, i, { rmode: e.target.value })}>
+            <option value="field">지표</option>
+            <option value="num">숫자</option>
+          </select>
+          {c.rmode === 'num' ? (
+            <input type="number" step="any" value={c.right} onChange={(e) => updateCond(which, i, { right: e.target.value })} />
+          ) : (
+            <select value={c.right} onChange={(e) => updateCond(which, i, { right: e.target.value })}>
+              {meta.fields.map((f: any) => <option key={f.value} value={f.value}>{f.label}</option>)}
+            </select>
+          )}
+          <button type="button" className="cond-del" onClick={() => removeCond(which, i)}>✕</button>
+        </div>
+      ))}
+      <button type="button" className="cond-add" onClick={() => addCond(which)}>+ 조건 추가 (AND)</button>
+    </div>
+  )
+
+  function updateCond(which: 'entry' | 'exit', i: number, patch: any) {
+    setDraft((d: any) => {
+      const arr = [...d[which]]; arr[i] = { ...arr[i], ...patch }; return { ...d, [which]: arr }
+    })
+  }
+  function addCond(which: 'entry' | 'exit') {
+    setDraft((d: any) => ({ ...d, [which]: [...d[which], blankCond()] }))
+  }
+  function removeCond(which: 'entry' | 'exit', i: number) {
+    setDraft((d: any) => ({ ...d, [which]: d[which].filter((_: any, j: number) => j !== i) }))
+  }
+
+  return (
+    <div className="auto-panel">
+      <div className="auto-header">
+        <span className="auto-badge paper">PAPER ONLY</span>
+        <span className="auto-badge ghost">실거래 미구현</span>
+        <span className="strat-title">사용자 전략 빌더 · 조건 AND 결합 · 내부 시뮬</span>
+      </div>
+      {autorun && autorun.builderSupported === false && (
+        <StatusBadge status="not_available" message="현재 체결방식이 'KIS 모의'입니다. 전략 빌더는 내부 시뮬 전용 — 자동전략 탭의 체결방식을 '내부 시뮬'로 바꿔야 전략 자동실행됩니다." />
+      )}
+
+      {!draft ? (
+        <>
+          <div className="strat-run-bar">
+            <label className={`auto-toggle ${autorun?.enabled ? 'on' : 'off'}`}>
+              <span className="auto-toggle-label">자동 실행 {autorun?.enabled ? 'ON' : 'OFF'}</span>
+              <input type="checkbox" checked={!!autorun?.enabled} onChange={() => void toggleAutorun()} />
+              <span className="auto-toggle-track"><span className="auto-toggle-thumb" /></span>
+            </label>
+            <span className="strat-run-note">활성 전략 {autorun?.enabledStrategies ?? 0}개 · {autorun?.intervalSec ?? 300}초 주기 · 앱 켜진 동안만</span>
+            <button type="button" onClick={() => void runOnce()} disabled={busy === 'run'}>{busy === 'run' ? '실행 중…' : '지금 1회 실행'}</button>
+            <button type="button" onClick={() => setDraft(toDraft(null))}>+ 새 전략</button>
+          </div>
+          {runs.length > 0 && (
+            <div className="auto-section">
+              <h4>최근 실행</h4>
+              <div className="auto-feed">
+                {runs.slice(0, 6).map((r) => (
+                  <div className="auto-feed-row" key={r.id}>
+                    <span className="af-symbol">#{r.id}</span>
+                    <span className="af-reason">{r.trigger} · 신호 {r.signals_count} · 주문 {r.orders_count} · 차단 {r.blocked_count}</span>
+                    {r.note && <span className="af-skipped">{(r.note || '').slice(0, 24)}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="auto-section">
+            <h4>내 전략 ({list.length})</h4>
+            {list.length === 0 ? (
+              <EmptyState text="아직 전략 없음. '새 전략'으로 지표 조건을 조합해보세요." />
+            ) : list.map((s) => (
+              <div className="strat-card" key={s.id}>
+                <div className="strat-card-head">
+                  <label className={`auto-toggle ${s.enabled ? 'on' : 'off'}`}>
+                    <span className="auto-toggle-label">{s.enabled ? 'ON' : 'OFF'}</span>
+                    <input type="checkbox" checked={s.enabled} onChange={() => void toggleEnable(s)} />
+                    <span className="auto-toggle-track"><span className="auto-toggle-thumb" /></span>
+                  </label>
+                  <strong>{s.name}</strong>
+                  <span className="strat-card-actions">
+                    <button type="button" onClick={() => { setDraft(toDraft(s)); setBt(s.lastBacktest || null) }}>편집</button>
+                    <button type="button" onClick={() => void remove(s)}>삭제</button>
+                  </span>
+                </div>
+                <div className="strat-card-meta">
+                  진입 {s.definition?.entry?.length || 0} · 청산 {s.definition?.exit?.length || 0} · 손절 {s.definition?.stop_loss_pct != null ? `${(s.definition.stop_loss_pct * 100).toFixed(0)}%` : '–'} · 익절 {s.definition?.take_profit_pct != null ? `${(s.definition.take_profit_pct * 100).toFixed(0)}%` : '–'}
+                  {s.lastBacktest?.ok && <span className="strat-bt-mini"> · 백테스트 수익 {pct(s.lastBacktest.totalReturn)} / MDD {pct(s.lastBacktest.maxDrawdown)} / {s.lastBacktest.trades}거래</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="auto-actions">
+            <button type="button" onClick={() => { setDraft(null); setBt(null) }}>← 목록</button>
+            <button type="button" onClick={() => void save()} disabled={busy === 'save'}>{busy === 'save' ? '저장 중…' : '저장'}</button>
+          </div>
+          <div className="auto-grid">
+            <label className="auto-field">
+              <span>전략 이름</span>
+              <input value={draft.name} onChange={(e) => setDraft((d: any) => ({ ...d, name: e.target.value }))} />
+            </label>
+            <label className="auto-field">
+              <span>타임프레임</span>
+              <select value={draft.timeframe} onChange={(e) => setDraft((d: any) => ({ ...d, timeframe: e.target.value }))}>
+                {(meta.timeframes || []).map((t: any) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div className="auto-section">
+            <h4>진입 조건 <small>(전부 충족 = 매수)</small></h4>
+            {condRows('entry')}
+          </div>
+          <div className="auto-section">
+            <h4>청산 조건 <small>(전부 충족 = 매도, 손절·익절과 별개)</small></h4>
+            {condRows('exit')}
+          </div>
+          <div className="auto-section">
+            <h4>손절 / 익절</h4>
+            <div className="auto-grid">
+              <label className="auto-field"><span>손절 % (양수 입력)</span>
+                <input type="number" step="0.5" value={draft.stop} onChange={(e) => setDraft((d: any) => ({ ...d, stop: e.target.value }))} /></label>
+              <label className="auto-field"><span>익절 %</span>
+                <input type="number" step="0.5" value={draft.take} onChange={(e) => setDraft((d: any) => ({ ...d, take: e.target.value }))} /></label>
+            </div>
+          </div>
+
+          <div className="auto-section">
+            <h4>백테스트 <small>(일봉 · 검증 후 ON 권장)</small></h4>
+            <div className="cond-row">
+              <input value={btSymbol} onChange={(e) => setBtSymbol(e.target.value)} placeholder="종목 (예: AAPL, 005930.KS)" />
+              <select value={btPeriod} onChange={(e) => setBtPeriod(e.target.value)}>
+                <option value="1Y">1년</option><option value="2Y">2년</option><option value="5Y">5년</option>
+              </select>
+              <button type="button" onClick={() => void runBacktest()} disabled={busy === 'bt'}>{busy === 'bt' ? '실행 중…' : '백테스트'}</button>
+            </div>
+            {bt && (bt.ok ? (
+              <div className="metric-row strat-bt">
+                <Metric label="수익률" value={pct(bt.totalReturn)} tone={bt.totalReturn >= 0 ? 'up' : 'down'} />
+                <Metric label="매수후보유" value={pct(bt.buyHoldReturn)} />
+                <Metric label="MDD" value={pct(bt.maxDrawdown)} tone="down" />
+                <Metric label="거래수" value={String(bt.trades)} />
+                <Metric label="승률" value={bt.winRate == null ? '–' : pct(bt.winRate)} />
+              </div>
+            ) : <StatusBadge status="not_available" message={bt.reason || '백테스트 불가'} />)}
+            {bt?.ok && <div className="strat-bt-note">{bt.note}</div>}
+          </div>
+        </>
+      )}
+
+      {msg && <div className="auto-runresult">{msg}</div>}
+      {err && <StatusBadge status="error" message={err} />}
+
+      <div className="auto-limits">
+        리스크 가드(전략 위 강제): 일손실 {pct(meta.guards.dailyLossHalt)} / 낙폭 {pct(meta.guards.totalDrawdownHalt)} / 현금 ≥{(meta.guards.minCashPct * 100).toFixed(0)}% / 단일 ≤{(meta.guards.maxSinglePct * 100).toFixed(0)}% / 최대 {meta.guards.maxPositions}종목 / 롱온리·레버리지·인버스 금지
+      </div>
+      <div className="auto-live-disabled">
+        <button type="button" disabled>실거래 자동매매 (검증 후)</button>
+        <small>전략은 페이퍼로만 실행. 실거래 경로는 설계 단계 — 백테스트·페이퍼 검증 + 별도 승인 전까지 비활성.</small>
+      </div>
+      <DisclaimerNote />
+    </div>
+  )
+}
+
+function AutoSettingsForm({ authHeaders, onSeedReset }: { authHeaders: any; onSeedReset: () => void }) {
+  const [cfg, setCfg] = useState<any>(null)
+  const [seedInput, setSeedInput] = useState('')
+  const [form, setForm] = useState<any>(null)
+  const [scan, setScan] = useState<any>(null)
+  const [brokerSel, setBrokerSel] = useState<string>('paper_internal')
+  const [engineSel, setEngineSel] = useState<string>('builder')
+  const [universeText, setUniverseText] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const data = await apiFetch('/api/automation/settings', { headers: authHeaders })
+      setCfg(data)
+      setForm({ ...data.params })
+      setScan({ ...(data.scan || { universe_mode: 'auto', scan_kospi_top: 40, scan_nasdaq_top: 40 }) })
+      setBrokerSel(data.brokerMode || 'paper_internal')
+      setEngineSel(data.engine || 'builder')
+      setSeedInput(String(Math.round(data.seedKrw)))
+      setUniverseText((data.params.universe || []).join(' '))
+    } catch (e: any) {
+      setErr(e?.message || '설정 로딩 실패')
+    }
+  }, [authHeaders])
+
+  useEffect(() => { void load() }, [load])
+
+  if (!cfg || !form || !scan) {
+    return <div className="auto-settings">{err ? <StatusBadge status="error" message={err} /> : <EmptyState text="설정 로딩 중" />}</div>
+  }
+
+  const setNum = (key: string, value: string) => setForm((f: any) => ({ ...f, [key]: value === '' ? '' : Number(value) }))
+
+  const applySeed = async () => {
+    const v = Number(seedInput)
+    if (!Number.isFinite(v) || v < 50000) { setErr('시드는 50,000원 이상'); return }
+    if (!window.confirm(`시드를 ${v.toLocaleString()}원으로 변경하면 paper 시뮬 이력(포지션/주문/스냅샷/30일 카운터)이 모두 초기화됩니다. 진행할까요?`)) return
+    setBusy('seed'); setErr(null); setMsg(null)
+    try {
+      await apiFetch('/api/automation/seed', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ seed_krw: v }) })
+      setMsg('시드 변경 + 시뮬 초기화 완료')
+      await load()
+      onSeedReset()
+    } catch (e: any) { setErr(e?.message || '시드 변경 실패') } finally { setBusy(null) }
+  }
+
+  const saveParams = async () => {
+    setBusy('save'); setErr(null); setMsg(null)
+    const universe = universeText.split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 30)
+    const payload: any = {
+      stop_loss_pct: Number(form.stop_loss_pct),
+      rsi_buy_min: Number(form.rsi_buy_min),
+      rsi_buy_max: Number(form.rsi_buy_max),
+      rsi_overheat: Number(form.rsi_overheat),
+      volume_factor: Number(form.volume_factor),
+      min_order_krw: Number(form.min_order_krw),
+      universe,
+      universe_mode: scan.universe_mode,
+      scan_kospi_top: Number(scan.scan_kospi_top),
+      scan_nasdaq_top: Number(scan.scan_nasdaq_top),
+      broker_mode: brokerSel,
+      engine: engineSel,
+    }
+    try {
+      const data = await apiFetch('/api/automation/settings', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      setCfg(data); setForm({ ...data.params }); setScan({ ...data.scan }); setBrokerSel(data.brokerMode || 'paper_internal'); setEngineSel(data.engine || 'builder'); setUniverseText((data.params.universe || []).join(' '))
+      setMsg('전략 파라미터 저장됨')
+    } catch (e: any) { setErr(e?.message || '저장 실패') } finally { setBusy(null) }
+  }
+
+  const resetDefaults = () => {
+    setForm({ ...cfg.defaults })
+    setScan({
+      universe_mode: cfg.defaults.universe_mode ?? 'auto',
+      scan_kospi_top: cfg.defaults.scan_kospi_top ?? 40,
+      scan_nasdaq_top: cfg.defaults.scan_nasdaq_top ?? 40,
+    })
+    setUniverseText((cfg.defaults.universe || []).join(' '))
+    setMsg('기본값으로 되돌림(저장 눌러야 적용)')
+  }
+
+  const lim = cfg.limits || {}
+  const num = (key: string, label: string, step = '1', hint = '') => (
+    <label className="auto-field">
+      <span>{label}{hint && <small> {hint}</small>}</span>
+      <input type="number" step={step} value={form[key] ?? ''} onChange={(e) => setNum(key, e.target.value)} />
+    </label>
+  )
+
+  return (
+    <div className="auto-settings">
+      <div className="auto-section">
+        <h4>체결 방식 / 엔진</h4>
+        <div className="auto-grid">
+          <label className="auto-field">
+            <span>체결방식</span>
+            <select value={brokerSel} onChange={(e) => setBrokerSel(e.target.value)}>
+              <option value="paper_internal">내부 시뮬 (PaperBroker)</option>
+              <option value="kis_mock" disabled={!cfg.kisConfigured}>KIS 모의계좌 {cfg.kisConfigured ? '' : '(키 필요)'}</option>
+            </select>
+          </label>
+          <label className="auto-field">
+            <span>자동 엔진 <small>(동시 1개만)</small></span>
+            <select value={brokerSel === 'kis_mock' ? 'legacy' : engineSel} disabled={brokerSel === 'kis_mock'}
+              onChange={(e) => setEngineSel(e.target.value)}>
+              <option value="builder">전략 빌더 (사용자 조건)</option>
+              <option value="legacy">자동전략 (모멘텀+랭킹)</option>
+            </select>
+          </label>
+        </div>
+        <small className="auto-hint">
+          엔진은 한 번에 하나만 계좌를 움직입니다(레이스 방지). KIS 모의 = 자동전략 엔진 전용(전략 빌더는 내부 시뮬). 활성: <b>{cfg.activeEngine}</b>
+        </small>
+        <small className="auto-hint">
+          {brokerSel === 'kis_mock'
+            ? 'KIS 모의계좌로 실제 주문 전송(국내 시장가 / 해외 지정가). 포트폴리오는 KIS 잔고에서 읽음. 체결은 정규장·지정가 교차 시. 실거래 아님(모의 도메인).'
+            : '내부 PaperBroker 즉시체결 시뮬. KIS 미사용. 저장 후 적용.'}
+          {' '}변경은 저장 눌러야 적용.
+        </small>
+      </div>
+
+      <div className="auto-section">
+        <h4>시드 (paper)</h4>
+        <div className="auto-seed-row">
+          <input type="number" step="10000" value={seedInput} onChange={(e) => setSeedInput(e.target.value)} />
+          <button type="button" onClick={() => void applySeed()} disabled={busy === 'seed'}>
+            {busy === 'seed' ? '적용 중…' : '시드 변경 + 초기화'}
+          </button>
+        </div>
+        <small className="auto-hint">현재 시드 {formatMoney(cfg.seedKrw, 'KRW')}. 변경 시 시뮬 이력 전체 초기화(실거래 아님).</small>
+      </div>
+
+      <div className="auto-section">
+        <h4>유니버스 / 스캔</h4>
+        <div className="auto-grid">
+          <label className="auto-field">
+            <span>모드</span>
+            <select value={scan.universe_mode} onChange={(e) => setScan((s: any) => ({ ...s, universe_mode: e.target.value }))}>
+              <option value="auto">광역 자동 (코스피+나스닥100)</option>
+              <option value="custom">커스텀 리스트</option>
+            </select>
+          </label>
+        </div>
+        {scan.universe_mode === 'auto' ? (
+          <>
+            <div className="auto-grid">
+              <label className="auto-field">
+                <span>코스피 거래대금 상위 <small>(0~{cfg.scanCaps?.kospiMax ?? 829})</small></span>
+                <input type="number" step="10" min={0} max={cfg.scanCaps?.kospiMax ?? 829} value={scan.scan_kospi_top}
+                  onChange={(e) => setScan((s: any) => ({ ...s, scan_kospi_top: e.target.value === '' ? '' : Number(e.target.value) }))} />
+              </label>
+              <label className="auto-field">
+                <span>나스닥100 상위 <small>(0~{cfg.scanCaps?.nasdaqMax ?? 100})</small></span>
+                <input type="number" step="10" min={0} max={cfg.scanCaps?.nasdaqMax ?? 100} value={scan.scan_nasdaq_top}
+                  onChange={(e) => setScan((s: any) => ({ ...s, scan_nasdaq_top: e.target.value === '' ? '' : Number(e.target.value) }))} />
+              </label>
+            </div>
+            <small className="auto-hint">
+              사이클당 차트 조회 ≈ 코스피상위 + 나스닥상위 (현재 ~{(Number(scan.scan_kospi_top) || 0) + (Number(scan.scan_nasdaq_top) || 0)}종목, 상한 {cfg.scanCaps?.hardCap ?? 160}). 클수록 느림·레이트리밋. 모멘텀 랭킹 상위만 매수.
+            </small>
+          </>
+        ) : (
+          <label className="auto-field wide">
+            <span>커스텀 유니버스 <small>(공백/콤마 구분, 최대 30, 롱온리·비레버리지)</small></span>
+            <textarea rows={3} value={universeText} onChange={(e) => setUniverseText(e.target.value)} />
+          </label>
+        )}
+      </div>
+
+      <div className="auto-section">
+        <h4>전략 파라미터</h4>
+        <div className="auto-grid">
+          {num('stop_loss_pct', '손절률', '0.005', '(음수, 예 -0.07)')}
+          {num('rsi_buy_min', '진입 RSI 하한', '1')}
+          {num('rsi_buy_max', '진입 RSI 상한', '1')}
+          {num('rsi_overheat', '과열 RSI', '1')}
+          {num('volume_factor', '거래량 배수', '0.1')}
+          {num('min_order_krw', '최소 주문(KRW)', '10000')}
+        </div>
+        <div className="auto-actions">
+          <button type="button" onClick={() => void saveParams()} disabled={busy === 'save'}>
+            {busy === 'save' ? '저장 중…' : '파라미터 저장'}
+          </button>
+          <button type="button" onClick={resetDefaults} disabled={!!busy}>기본값</button>
+        </div>
+      </div>
+
+      <div className="auto-section">
+        <h4>리스크 한도 <small>(전략이 변경 불가 · 읽기전용)</small></h4>
+        <div className="auto-limits">
+          일손실 {pct(lim.dailyLossHalt)} / 전체낙폭 {pct(lim.totalDrawdownHalt)} / 현금 ≥{lim.minCashPct == null ? '–' : (lim.minCashPct * 100).toFixed(0)}% / 단일 ≤{lim.maxSinglePct == null ? '–' : (lim.maxSinglePct * 100).toFixed(0)}% / 최대 {lim.maxPositions ?? '–'}종목 / 롱온리·레버리지·인버스 금지
+        </div>
+      </div>
+
+      {msg && <div className="auto-runresult">{msg}</div>}
+      {err && <StatusBadge status="error" message={err} />}
+    </div>
+  )
+}
+
 function AutoStrategyPanel({ authHeaders }: any) {
   const [status, setStatus] = useState<AutoStatus | null>(null)
   const [promotion, setPromotion] = useState<PromotionCheck | null>(null)
@@ -2389,6 +3163,7 @@ function AutoStrategyPanel({ authHeaders }: any) {
   const [errMsg, setErrMsg] = useState<string | null>(null)
   const [report, setReport] = useState<any>(null)
   const [showReport, setShowReport] = useState(false)
+  const [view, setView] = useState<'main' | 'settings'>('main')
 
   const loadStatus = useCallback(async () => {
     try {
@@ -2441,10 +3216,9 @@ function AutoStrategyPanel({ authHeaders }: any) {
     setRunResult(null)
     const res = await post('/api/automation/run-once', 'run')
     if (res) {
-      const sig = Array.isArray(res.signals) ? res.signals.length : 0
-      const ord = Array.isArray(res.orders) ? res.orders.length : 0
-      const blk = Array.isArray(res.blocked) ? res.blocked.length : (res.blocked ?? 0)
-      setRunResult(`레짐 ${res.regime ?? '–'} · 신호 ${sig} · 주문 ${ord} · 차단 ${blk}`)
+      // 백엔드는 숫자 카운트를 반환한다(배열 아님).
+      const n = (v: any) => (Array.isArray(v) ? v.length : Number(v ?? 0))
+      setRunResult(`레짐 ${res.regime ?? '–'} · 신호 ${n(res.signals)} · 주문 ${n(res.orders)} · 차단 ${n(res.blocked)}`)
     }
     await loadPromotion()
   }
@@ -2486,11 +3260,31 @@ function AutoStrategyPanel({ authHeaders }: any) {
         <span className="auto-badge paper">PAPER ONLY</span>
         <span className="auto-badge ghost">실전 미구현</span>
         <span className={`auto-status ${meta.cls}`}>{meta.label}</span>
+        <span className="auto-badge ghost">{status.brokerMode === 'kis_mock' ? 'KIS 모의계좌' : '내부 sim'}</span>
         <span className="auto-seed">시드 {formatMoney(status.seedKrw, 'KRW')}</span>
+        <label className={`auto-toggle ${running ? 'on' : 'off'}${status.halted ? ' disabled' : ''}`}>
+          <span className="auto-toggle-label">{running ? '실행 중' : '정지됨'}</span>
+          <input
+            type="checkbox"
+            checked={running}
+            disabled={!!busy || !!status.halted}
+            onChange={(e) => void (e.target.checked ? onStart() : onStop())}
+          />
+          <span className="auto-toggle-track"><span className="auto-toggle-thumb" /></span>
+        </label>
+      </div>
+
+      <div className="auto-subtabs">
+        <button type="button" className={view === 'main' ? 'active' : ''} onClick={() => setView('main')}>대시보드</button>
+        <button type="button" className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>상세설정</button>
       </div>
 
       {status.halted && status.haltReason && <StatusBadge status="error" message={`차단: ${status.haltReason}`} />}
 
+      {view === 'settings' ? (
+        <AutoSettingsForm authHeaders={authHeaders} onSeedReset={() => { void loadStatus(); void loadPromotion() }} />
+      ) : (
+      <>
       <div className="metric-row">
         <Metric label="총자산" value={formatMoney(status.totalValueKrw, 'KRW')} />
         <Metric label="누적 수익률" value={pct(status.cumReturn)} tone={pctTone(status.cumReturn)} />
@@ -2499,12 +3293,6 @@ function AutoStrategyPanel({ authHeaders }: any) {
       </div>
 
       <div className="auto-actions">
-        <button type="button" onClick={() => void onStart()} disabled={!!busy || running || !!status.halted}>
-          {busy === 'start' ? '시작 중…' : '자동전략 시작'}
-        </button>
-        <button type="button" onClick={() => void onStop()} disabled={!!busy || !running}>
-          {busy === 'stop' ? '정지 중…' : '정지'}
-        </button>
         <button type="button" onClick={() => void onRunOnce()} disabled={!!busy}>
           {busy === 'run' ? '실행 중…' : '1회 판단 실행'}
         </button>
@@ -2607,6 +3395,8 @@ function AutoStrategyPanel({ authHeaders }: any) {
         <button type="button" disabled>실전 자동매매 승인</button>
         <small>30일 검증 통과 + 수동 승인 + 별도 후속 구현 전까지 비활성. 1차에서는 실제 주문과 연결되지 않습니다.</small>
       </div>
+      </>
+      )}
 
       <DisclaimerNote />
 
@@ -2783,6 +3573,25 @@ function mergeLayout(candidate: any): LayoutState {
   if (!mergedTabs.auto?.center?.includes('autoStrategy')) {
     mergedTabs.auto = defaultLayout.tabs.auto
   }
+  // Manual tab is new; force default on saved layouts missing it.
+  if (!mergedTabs.manual?.center?.includes('manualPortfolio')) {
+    mergedTabs.manual = defaultLayout.tabs.manual
+  }
+  // Research tab is new (탭 정리 11→6); force default on saved layouts missing it.
+  if (!mergedTabs.research?.center?.includes('heatmap')) {
+    mergedTabs.research = defaultLayout.tabs.research
+  }
+  // Strategy builder tab is new; force default on saved layouts missing it.
+  if (!mergedTabs.strategy?.center?.includes('strategyBuilder')) {
+    mergedTabs.strategy = defaultLayout.tabs.strategy
+  }
+  // Portfolio tab is now auto-only; strip the manual controls from older saved layouts.
+  if (
+    mergedTabs.portfolio?.left?.includes('portfolioControls') ||
+    !mergedTabs.portfolio?.center?.includes('portfolio')
+  ) {
+    mergedTabs.portfolio = defaultLayout.tabs.portfolio
+  }
   // Inject the favorites widget into saved layouts that predate it.
   for (const id of Object.keys(mergedTabs) as TabId[]) {
     const cols = mergedTabs[id]
@@ -2858,6 +3667,7 @@ function App() {
   const [phase, setPhase] = useState<'loading' | 'gate' | 'ready'>('loading')
   const [initialized, setInitialized] = useState(false)
   const [needsOnboarding, setNeedsOnboarding] = useState(false)
+  const [guest, setGuest] = useState(() => localStorage.getItem('kft_guest') === '1')
 
   useEffect(() => {
     let cancelled = false
@@ -2898,6 +3708,8 @@ function App() {
   useEffect(() => {
     const onUnauthorized = () => {
       localStorage.removeItem('kft_token')
+      localStorage.removeItem('kft_guest')
+      setGuest(false)
       setToken('')
       setPhase('gate')
     }
@@ -2919,12 +3731,23 @@ function App() {
         initialized={initialized}
         onAuthed={(tok) => {
           localStorage.setItem('kft_token', tok)
+          localStorage.removeItem('kft_guest')
+          setGuest(false)
           setToken(tok)
           setPhase('ready')
           // 진입 전 Gemini+DART 키 필수 — 둘 다 없으면 온보딩 강제
           apiFetch('/api/config-status', { headers: { Authorization: `Bearer ${tok}` } })
             .then((cfg) => setNeedsOnboarding(!(cfg?.geminiConfigured && cfg?.dartConfigured)))
             .catch(() => setNeedsOnboarding(true))
+        }}
+        onGuest={async () => {
+          const data = await apiFetch('/api/auth/guest', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+          localStorage.setItem('kft_token', data.token)
+          localStorage.setItem('kft_guest', '1')
+          setGuest(true)
+          setToken(data.token)
+          setNeedsOnboarding(false)
+          setPhase('ready')
         }}
       />
     )
@@ -2934,8 +3757,11 @@ function App() {
     <>
       <Terminal
         token={token}
+        guest={guest}
         onLock={() => {
           localStorage.removeItem('kft_token')
+          localStorage.removeItem('kft_guest')
+          setGuest(false)
           setToken('')
           setPhase('gate')
         }}
@@ -2953,14 +3779,29 @@ function App() {
 function AuthGate({
   initialized,
   onAuthed,
+  onGuest,
 }: {
   initialized: boolean
   onAuthed: (token: string, isFirst: boolean) => void
+  onGuest: () => Promise<void>
 }) {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [guestBusy, setGuestBusy] = useState(false)
+
+  const enterGuest = async () => {
+    setError('')
+    setGuestBusy(true)
+    try {
+      await onGuest()
+    } catch {
+      setError('데모 진입에 실패했습니다. 서버 연결을 확인하세요.')
+    } finally {
+      setGuestBusy(false)
+    }
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -3029,6 +3870,7 @@ function AuthGate({
           <span className="brand-mark">KT</span>
           <strong>한국어 금융 터미널</strong>
         </div>
+        <p className="auth-tagline">KR·US 통합 리서치 + 페이퍼 트레이딩 연습 · 지연데이터 기반(실시간 매매 아님)</p>
         {initialized ? (
           <>
             <h1>잠금 해제</h1>
@@ -3073,6 +3915,22 @@ function AuthGate({
         <button className="auth-submit" type="submit" disabled={busy}>
           {busy ? '처리 중…' : initialized ? '잠금 해제' : '비밀번호 설정'}
         </button>
+
+        <div className="auth-divider"><span>또는</span></div>
+        <button className="auth-guest" type="button" onClick={() => void enterGuest()} disabled={guestBusy}>
+          {guestBusy ? '여는 중…' : '🔎 키 없이 둘러보기 (데모)'}
+        </button>
+        <p className="auth-guest-note">실시간 시장·차트·뉴스를 키 없이 바로 확인. 필수는 마스터 비밀번호 1개뿐.</p>
+
+        <div className="auth-unlocks">
+          <strong>키 입력 시 잠금해제 (전부 선택)</strong>
+          <ul>
+            <li><b>KIS</b> — 한국주 실시간 호가 + 모의투자(국내·해외) 자동매매 연결</li>
+            <li><b>Gemini</b> — 종목·차트·뉴스 AI 요약/해설</li>
+            <li><b>DART</b> — 한국 공시(전자공시) 조회</li>
+          </ul>
+          <small>키는 로컬에 암호화 저장. 마스터 비밀번호로만 접근.</small>
+        </div>
       </form>
     </div>
   )

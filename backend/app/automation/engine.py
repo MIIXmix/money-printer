@@ -45,6 +45,35 @@ def avg_volume(points: list[dict], n: int = 20) -> float | None:
     return sum(tail) / len(tail) if tail else None
 
 
+def momentum_score(points: list[dict]) -> float | None:
+    """랭킹용 모멘텀 강도 점수(높을수록 강함). 설명 가능한 규칙 합성, AI 미관여.
+
+    구성: SMA60 대비 가격 추세 + SMA20 대비 + MACD 히스토그램(가격 정규화)
+          + RSI 60 근접 보너스 + 약 3개월(60거래일) 수익률.
+    """
+    last = last_real_point(points)
+    if not last or last.get("close") is None:
+        return None
+    close = last["close"]
+    if not close:
+        return None
+    sma20 = last.get("sma20"); sma60 = last.get("sma60")
+    rsi = last.get("rsi14"); mh = last.get("macdHist")
+    score = 0.0
+    if sma60:
+        score += (close / sma60 - 1.0) * 1.0
+    if sma20:
+        score += (close / sma20 - 1.0) * 0.5
+    if mh is not None:
+        score += (mh / close) * 2.0
+    if rsi is not None:
+        score += (1.0 - abs(rsi - 60.0) / 40.0) * 0.3
+    reals = [p["close"] for p in points if p.get("close") is not None]
+    if len(reals) >= 60 and reals[-60]:
+        score += (close / reals[-60] - 1.0) * 0.5
+    return score
+
+
 # ── 시장 레짐 ────────────────────────────────────────────────────────────────
 
 def evaluate_regime(index_points: dict[str, list[dict]]) -> tuple[str, str]:

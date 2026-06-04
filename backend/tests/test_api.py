@@ -79,3 +79,57 @@ def test_dart_corp_code_validation():
     headers = _headers()
     resp = client.get("/api/filings/dart?corp_code=not8digits", headers=headers)
     assert resp.status_code == 422
+
+
+def test_strategy_crud_and_meta():
+    headers = _headers()
+    # 메타(지표·연산자 목록)
+    meta = client.get("/api/strategies/meta", headers=headers)
+    assert meta.status_code == 200
+    assert len(meta.json()["fields"]) > 10
+    assert any(o["value"] == "cross_above" for o in meta.json()["operators"])
+    # literal 경로가 /{strategy_id}에 셰도잉되지 않아야 함 (200, not 422)
+    assert client.get("/api/strategies/autorun", headers=headers).status_code == 200
+    assert client.get("/api/strategies/runs", headers=headers).status_code == 200
+    # 생성
+    body = {"name": "RSI 반등", "definition": {
+        "entry": [{"left": "rsi14", "op": "<", "right": 30}, {"left": "close", "op": ">", "right": "sma60"}],
+        "exit": [{"left": "close", "op": "<", "right": "sma20"}],
+        "stop_loss_pct": -0.05, "take_profit_pct": 0.1,
+    }}
+    created = client.post("/api/strategies", json=body, headers=headers)
+    assert created.status_code == 200
+    sid = created.json()["id"]
+    assert created.json()["enabled"] is False
+    # 목록
+    lst = client.get("/api/strategies", headers=headers)
+    assert any(s["id"] == sid for s in lst.json()["strategies"])
+    # on/off
+    en = client.post(f"/api/strategies/{sid}/enable", json={"enabled": True}, headers=headers)
+    assert en.json()["enabled"] is True
+    # 수정
+    up = client.put(f"/api/strategies/{sid}", json={"name": "RSI 반등 v2"}, headers=headers)
+    assert up.json()["name"] == "RSI 반등 v2"
+    # 삭제
+    assert client.delete(f"/api/strategies/{sid}", headers=headers).status_code == 200
+    assert client.get(f"/api/strategies/{sid}", headers=headers).status_code == 404
+
+
+def test_guest_token_reads_market_but_not_sensitive():
+    g = client.post("/api/auth/guest")
+    assert g.status_code == 200
+    token = g.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    # 읽기전용 시장 데이터 허용
+    assert client.get("/api/market/fx", headers=headers).status_code == 200
+    assert client.get("/api/market/chart?symbol=AAPL", headers=headers).status_code == 200
+    # config-status는 게스트도 200이지만 통합은 전부 미설정(정보 누출 0)
+    cfg = client.get("/api/config-status", headers=headers)
+    assert cfg.status_code == 200
+    assert cfg.json().get("guest") is True
+    assert cfg.json().get("geminiConfigured") is False
+    # 민감 라우트 거부 (마스터 전용)
+    assert client.get("/api/automation/status", headers=headers).status_code == 401
+    assert client.get("/api/portfolio/summary", headers=headers).status_code == 401
+    assert client.get("/api/api-keys", headers=headers).status_code == 401
+    assert client.post("/api/automation/run-once", headers=headers).status_code == 401

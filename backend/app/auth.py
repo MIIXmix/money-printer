@@ -85,6 +85,19 @@ def create_token(user: dict[str, Any]) -> str:
     return payload_b64 + "." + _b64(sig)
 
 
+def create_guest_token() -> str:
+    """읽기전용 게스트 토큰. 마스터 계정 없이 시장 데이터 둘러보기용.
+    민감 라우트(키/자동전략/주문/포트폴리오)는 require_auth가 거부한다."""
+    payload = {
+        "sub": 0,
+        "guest": True,
+        "exp": int(time.time()) + settings.token_ttl_minutes * 60,
+    }
+    payload_b64 = _b64(json.dumps(payload, separators=(",", ":")).encode())
+    sig = hmac.new(_token_key(), payload_b64.encode(), hashlib.sha256).digest()
+    return payload_b64 + "." + _b64(sig)
+
+
 def read_token(token: str) -> dict[str, Any]:
     try:
         payload_b64, sig_b64 = token.split(".", 1)
@@ -163,6 +176,22 @@ def require_auth(authorization: Annotated[str | None, Header()] = None) -> dict[
     if int(master.get("token_version", 0)) != int(payload.get("ver", -1)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token_revoked")
     return {"id": master["id"], "email": master["email"], "created_at": master.get("created_at")}
+
+
+def require_view(authorization: Annotated[str | None, Header()] = None) -> dict[str, Any]:
+    """읽기전용 게이트: 마스터 토큰 또는 게스트 토큰을 허용한다.
+    시장/뉴스/공시 등 안전한 GET 라우트에만 사용. 민감 라우트는 require_auth 유지."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="login_required")
+    payload = read_token(authorization.removeprefix("Bearer ").strip())
+    if payload.get("guest"):
+        return {"id": 0, "role": "guest"}
+    master = get_master()
+    if not master or master["id"] != payload.get("sub"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="user_not_found")
+    if int(master.get("token_version", 0)) != int(payload.get("ver", -1)):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token_revoked")
+    return {"id": master["id"], "role": "master", "email": master["email"]}
 
 
 # ── API key encryption + retrieval ─────────────────────────────────────────

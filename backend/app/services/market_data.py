@@ -49,6 +49,8 @@ SYMBOL_LABELS = {
 }
 
 PERIOD_MAP = {
+    "1D": "1d",
+    "5D": "5d",
     "1M": "1mo",
     "3M": "3mo",
     "6M": "6mo",
@@ -59,6 +61,9 @@ PERIOD_MAP = {
 }
 
 INTERVAL_MAP = {"1D": "1d", "1W": "1wk", "1M": "1mo"}
+# 분봉(소문자). '1m'.upper()='1M'이 월봉과 충돌하므로 소문자 키로 분리.
+# yfinance 제약: 1m=최대 7일, 5m/15m/30m/60m=최대 60일. 지연 ~15분.
+INTRADAY_INTERVALS = {"1m": "1m", "2m": "2m", "5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m"}
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 KOREA_SNAPSHOT_PATH = PROJECT_ROOT / "data" / "korea_universe_screen_snapshot_2026-06-01.csv"
@@ -510,7 +515,7 @@ def market_overview() -> dict[str, Any]:
 
 def historical_chart(symbol: str, period: str, interval: str) -> dict[str, Any]:
     yf_period = PERIOD_MAP.get(period.upper())
-    yf_interval = INTERVAL_MAP.get(interval.upper())
+    yf_interval = INTERVAL_MAP.get(interval.upper()) or INTRADAY_INTERVALS.get(interval.strip().lower())
     normalized = symbol.strip().upper()
     if not yf_period or not yf_interval:
         return {
