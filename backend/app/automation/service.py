@@ -21,12 +21,10 @@ def broker_mode(user_id: int) -> str:
 def active_engine(user_id: int) -> str:
     """동시에 한 엔진만 계좌 장부를 움직인다(레이스 방지).
 
-    'legacy'  = 고정 모멘텀+랭킹 자동전략 (run_once). KIS 모드는 항상 이쪽.
-    'builder' = 사용자 전략 빌더 (run_strategies_once). 내부 sim 전용.
-    KIS 모드면 전략 빌더 미지원 → 강제 legacy.
+    'builder' = 사용자 전략 빌더 (run_strategies_once) — 내부 sim·KIS 모두 지원. 기본.
+    'legacy'  = 고정 모멘텀+랭킹 자동전략 (run_once).
+    broker_mode(internal/kis)는 두 엔진 모두 따른다.
     """
-    if broker_mode(user_id) == "kis_mock":
-        return "legacy"
     e = store.get_settings_raw(user_id).get("engine")
     return e if e in ("legacy", "builder") else "builder"
 

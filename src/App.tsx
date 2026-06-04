@@ -2690,17 +2690,48 @@ function StrategyBuilder({ authHeaders }: any) {
     setBusy('run'); setErr(null); setMsg(null)
     try {
       const res = await apiFetch('/api/strategies/run-once', { method: 'POST', headers: jsonHeaders })
-      setMsg(res.ran === 0 ? '활성 전략 없음 (전략 ON 필요)' : `실행: ${res.ran}전략 · 신호 ${res.signals} · 주문 ${res.orders} · 차단 ${res.blocked}`)
+      const r = res.rotation || res.condition || res
+      if (r?.rebalanced === false) setMsg(r.note || '리밸런싱 스킵(동일월)')
+      else setMsg((res.ran ?? r.ran) === 0 ? '활성 전략 없음 (전략 ON 필요)' : `실행됨 · 주문 ${r.orders ?? res.orders ?? 0} · 차단 ${r.blocked ?? res.blocked ?? 0}`)
       await load()
     } catch (e: any) { setErr(e?.message || '실행 실패') } finally { setBusy(null) }
+  }
+
+  const runRotationBacktest = async (s: any) => {
+    setBusy(`bt-${s.id}`); setErr(null)
+    try {
+      await apiFetch(`/api/strategies/${s.id}/backtest`, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ symbol: 'SPY', period: '10Y' }) })
+      await load()
+    } catch (e: any) { setErr(e?.message || '백테스트 실패') } finally { setBusy(null) }
   }
 
   useEffect(() => { void load() }, [load])
 
   const blankCond = () => ({ left: 'close', op: '>', right: 'sma20', rmode: 'field' as 'field' | 'num' })
 
+  const toRotationDraft = (s: any) => {
+    const def = s?.definition || {}
+    return {
+      id: s?.id ?? null,
+      name: s?.name ?? 'GTAA 글로벌',
+      kind: 'rotation',
+      topN: String(def.topN ?? 7),
+      weight: def.weight ?? 'equal',
+      regimeMode: def.regimeMode ?? 'none',
+      cashForEmpty: def.cashForEmpty !== false,
+      lookbackM: String(def.lookbackM ?? 12),
+      skipM: String(def.skipM ?? 1),
+      maxWeight: String(((def.maxWeight ?? 0.25) * 100)),
+      indexSymbol: def.indexSymbol ?? 'SPY',
+      universe: (def.universe || meta?.rotationPreset?.universe || []).join(', '),
+    }
+  }
+
+  const newRotationDraft = () => toRotationDraft({ definition: { ...(meta?.rotationPreset || {}) } })
+
   const toDraft = (s: any) => {
     const def = s?.definition || {}
+    if (def.kind === 'rotation') return toRotationDraft(s)
     const conv = (arr: any[]) => (arr || []).map((c) => ({
       left: c.left, op: c.op,
       right: typeof c.right === 'number' ? String(c.right) : c.right,
@@ -2718,6 +2749,22 @@ function StrategyBuilder({ authHeaders }: any) {
   }
 
   const draftToDefinition = (d: any) => {
+    if (d.kind === 'rotation') {
+      const uni = String(d.universe || '').split(/[\s,]+/).map((x: string) => x.trim().toUpperCase()).filter(Boolean)
+      return {
+        kind: 'rotation',
+        universe: uni,
+        topN: Math.max(1, Math.min(12, Number(d.topN) || 7)),
+        weight: d.weight === 'invvol' ? 'invvol' : 'equal',
+        regimeMode: d.regimeMode === 'index' ? 'index' : 'none',
+        cashForEmpty: !!d.cashForEmpty,
+        lookbackM: Math.max(2, Number(d.lookbackM) || 12),
+        skipM: Math.max(0, Number(d.skipM) || 1),
+        maxWeight: Math.min(0.5, Math.max(0.05, (Number(d.maxWeight) || 25) / 100)),
+        indexSymbol: String(d.indexSymbol || 'SPY').toUpperCase(),
+        rebalance: 'monthly',
+      }
+    }
     const conv = (arr: any[]) => arr
       .filter((c) => c.left && c.op && c.right !== '')
       .map((c) => ({ left: c.left, op: c.op, right: c.rmode === 'num' ? Number(c.right) : c.right }))
@@ -2734,7 +2781,9 @@ function StrategyBuilder({ authHeaders }: any) {
     if (!draft) return
     setBusy('save'); setErr(null); setMsg(null)
     const def = draftToDefinition(draft)
-    if (!def.entry.length) { setErr('진입 조건이 최소 1개 필요합니다.'); setBusy(null); return }
+    if (draft.kind === 'rotation') {
+      if (!def.universe || def.universe.length < def.topN) { setErr(`유니버스 종목이 보유수(${def.topN})보다 많아야 합니다.`); setBusy(null); return }
+    } else if (!(def as any).entry?.length) { setErr('진입 조건이 최소 1개 필요합니다.'); setBusy(null); return }
     try {
       if (draft.id) {
         await apiFetch(`/api/strategies/${draft.id}`, { method: 'PUT', headers: jsonHeaders, body: JSON.stringify({ name: draft.name, definition: def }) })
@@ -2766,7 +2815,9 @@ function StrategyBuilder({ authHeaders }: any) {
     setBusy('bt'); setErr(null); setBt(null)
     try {
       const def = draftToDefinition(draft)
-      const res = await apiFetch('/api/strategies/backtest', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ definition: def, symbol: btSymbol.trim().toUpperCase(), period: btPeriod }) })
+      const sym = draft.kind === 'rotation' ? 'SPY' : btSymbol.trim().toUpperCase()
+      const per = draft.kind === 'rotation' ? '10Y' : btPeriod
+      const res = await apiFetch('/api/strategies/backtest', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ definition: def, symbol: sym, period: per }) })
       setBt(res)
     } catch (e: any) { setErr(e?.message || '백테스트 실패') } finally { setBusy(null) }
   }
@@ -2822,8 +2873,8 @@ function StrategyBuilder({ authHeaders }: any) {
         <span className="auto-badge ghost">실거래 미구현</span>
         <span className="strat-title">사용자 전략 빌더 · 조건 AND 결합 · 내부 시뮬</span>
       </div>
-      {autorun && autorun.builderSupported === false && (
-        <StatusBadge status="not_available" message="현재 체결방식이 'KIS 모의'입니다. 전략 빌더는 내부 시뮬 전용 — 자동전략 탭의 체결방식을 '내부 시뮬'로 바꿔야 전략 자동실행됩니다." />
+      {autorun?.brokerMode === 'kis_mock' && (
+        <StatusBadge status="delayed" message="체결방식 = KIS 모의계좌. 이 전략들의 주문이 KIS 모의로 전송됩니다(국내 시장가/해외 지정가, 장중 체결). 30일 검증엔 미포함." />
       )}
 
       {!draft ? (
@@ -2836,8 +2887,18 @@ function StrategyBuilder({ authHeaders }: any) {
             </label>
             <span className="strat-run-note">활성 전략 {autorun?.enabledStrategies ?? 0}개 · {autorun?.intervalSec ?? 300}초 주기 · 앱 켜진 동안만</span>
             <button type="button" onClick={() => void runOnce()} disabled={busy === 'run'}>{busy === 'run' ? '실행 중…' : '지금 1회 실행'}</button>
-            <button type="button" onClick={() => setDraft(toDraft(null))}>+ 새 전략</button>
+            {meta.rotationPreset && <button type="button" className="strat-gtaa-btn" onClick={() => { setDraft(newRotationDraft()); setBt(null) }}>★ GTAA 전략 추가</button>}
+            <button type="button" onClick={() => setDraft(toDraft(null))}>+ 새 전략(조건형)</button>
           </div>
+          {meta.rotationPreset && (
+            <div className="auto-section gtaa-promo">
+              <h4>★ {meta.rotationPreset.name} <small>검증된 멀티에셋 모멘텀</small></h4>
+              <div className="strat-bt-mini">
+                백테스트(약 9년, 2022 폭락 포함): CAGR {pct(meta.rotationPreset.backtest.cagr)} · 최대낙폭 {pct(meta.rotationPreset.backtest.maxDrawdown)} · Sharpe {meta.rotationPreset.backtest.sharpe}
+              </div>
+              <div className="strat-bt-note">{meta.rotationPreset.desc}</div>
+            </div>
+          )}
           {runs.length > 0 && (
             <div className="auto-section">
               <h4>최근 실행</h4>
@@ -2856,7 +2917,27 @@ function StrategyBuilder({ authHeaders }: any) {
             <h4>내 전략 ({list.length})</h4>
             {list.length === 0 ? (
               <EmptyState text="아직 전략 없음. '새 전략'으로 지표 조건을 조합해보세요." />
-            ) : list.map((s) => (
+            ) : list.map((s) => (s.definition?.kind === 'rotation') ? (
+              <div className="strat-card rotation" key={s.id}>
+                <div className="strat-card-head">
+                  <label className={`auto-toggle ${s.enabled ? 'on' : 'off'}`}>
+                    <span className="auto-toggle-label">{s.enabled ? 'ON' : 'OFF'}</span>
+                    <input type="checkbox" checked={s.enabled} onChange={() => void toggleEnable(s)} />
+                    <span className="auto-toggle-track"><span className="auto-toggle-thumb" /></span>
+                  </label>
+                  <strong>★ {s.name}</strong>
+                  <span className="strat-card-actions">
+                    <button type="button" onClick={() => { setDraft(toDraft(s)); setBt(s.lastBacktest || null) }}>편집</button>
+                    <button type="button" onClick={() => void runRotationBacktest(s)} disabled={busy === `bt-${s.id}`}>{busy === `bt-${s.id}` ? '…' : '백테스트'}</button>
+                    <button type="button" onClick={() => void remove(s)}>삭제</button>
+                  </span>
+                </div>
+                <div className="strat-card-meta">
+                  멀티에셋 로테이션 · {(s.definition?.universe?.length || 0)}자산 풀 · 상위 {s.definition?.topN || 7}보유 · {s.definition?.weight === 'invvol' ? '역변동성' : '동일'}가중 · 월간 리밸런싱
+                  {s.lastBacktest?.ok && <span className="strat-bt-mini"> · 백테스트 CAGR {pct(s.lastBacktest.cagr)} / MDD {pct(s.lastBacktest.maxDrawdown)} / Sharpe {s.lastBacktest.sharpe ?? '–'}</span>}
+                </div>
+              </div>
+            ) : (
               <div className="strat-card" key={s.id}>
                 <div className="strat-card-head">
                   <label className={`auto-toggle ${s.enabled ? 'on' : 'off'}`}>
@@ -2876,6 +2957,65 @@ function StrategyBuilder({ authHeaders }: any) {
                 </div>
               </div>
             ))}
+          </div>
+        </>
+      ) : draft.kind === 'rotation' ? (
+        <>
+          <div className="auto-actions">
+            <button type="button" onClick={() => { setDraft(null); setBt(null) }}>← 목록</button>
+            <button type="button" onClick={() => void save()} disabled={busy === 'save'}>{busy === 'save' ? '저장 중…' : '저장'}</button>
+          </div>
+          <div className="gtaa-promo" style={{ marginTop: 8 }}>
+            <h4>★ 멀티에셋 모멘텀 로테이션 <small>월간 리밸런싱 · 롱온리 · AI 미관여</small></h4>
+            <div className="strat-bt-note">음수모멘텀·빈 슬롯은 자동 현금화. 자산군 분산이 낙폭을 낮춤. 기대치는 과거보다 보수적으로.</div>
+          </div>
+          <div className="auto-grid">
+            <label className="auto-field"><span>전략 이름</span>
+              <input value={draft.name} onChange={(e) => setDraft((d: any) => ({ ...d, name: e.target.value }))} /></label>
+            <label className="auto-field"><span>보유 종목수 (top N, 1~12)</span>
+              <input type="number" min={1} max={12} value={draft.topN} onChange={(e) => setDraft((d: any) => ({ ...d, topN: e.target.value }))} /></label>
+            <label className="auto-field"><span>가중 방식</span>
+              <select value={draft.weight} onChange={(e) => setDraft((d: any) => ({ ...d, weight: e.target.value }))}>
+                <option value="equal">동일가중 (검증 최적)</option>
+                <option value="invvol">역변동성가중</option>
+              </select></label>
+            <label className="auto-field"><span>레짐 필터</span>
+              <select value={draft.regimeMode} onChange={(e) => setDraft((d: any) => ({ ...d, regimeMode: e.target.value }))}>
+                <option value="none">자산별 절대모멘텀 (GTAA·권장)</option>
+                <option value="index">단일지수 게이트</option>
+              </select></label>
+            <label className="auto-field"><span>모멘텀 기간 (개월)</span>
+              <input type="number" min={2} max={24} value={draft.lookbackM} onChange={(e) => setDraft((d: any) => ({ ...d, lookbackM: e.target.value }))} /></label>
+            <label className="auto-field"><span>최근 제외 (skip, 개월)</span>
+              <input type="number" min={0} max={3} value={draft.skipM} onChange={(e) => setDraft((d: any) => ({ ...d, skipM: e.target.value }))} /></label>
+            <label className="auto-field"><span>단일 최대비중 (%)</span>
+              <input type="number" min={5} max={50} step={1} value={draft.maxWeight} onChange={(e) => setDraft((d: any) => ({ ...d, maxWeight: e.target.value }))} /></label>
+            <label className="auto-field"><span>레짐 지수 (index 모드용)</span>
+              <input value={draft.indexSymbol} onChange={(e) => setDraft((d: any) => ({ ...d, indexSymbol: e.target.value }))} /></label>
+            <label className="auto-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={draft.cashForEmpty} onChange={(e) => setDraft((d: any) => ({ ...d, cashForEmpty: e.target.checked }))} />
+              <span>빈 슬롯 현금화 (약세장 디리스킹 · 권장 ON)</span></label>
+          </div>
+          <div className="auto-section">
+            <h4>유니버스 <small>(쉼표/공백 구분 · ETF 권장)</small></h4>
+            <textarea className="universe-text" rows={3} value={draft.universe}
+              onChange={(e) => setDraft((d: any) => ({ ...d, universe: e.target.value }))}
+              placeholder="SPY, QQQ, EFA, EEM, EWY, EWJ, TLT, IEF, LQD, GLD, DBC, VNQ" />
+            <div className="strat-bt-note">기본: 미국·선진·신흥·한국(EWY)·일본(EWJ) 주식 + 미국채·회사채 + 금·원자재·리츠. 전부 USD 상장(환-랭킹 일관).</div>
+          </div>
+          <div className="auto-section">
+            <h4>백테스트 <small>(약 9~10년 · 월간)</small></h4>
+            <button type="button" onClick={() => void runBacktest()} disabled={busy === 'bt'}>{busy === 'bt' ? '실행 중…' : '백테스트 실행'}</button>
+            {bt && (bt.ok ? (
+              <div className="metric-row strat-bt">
+                <Metric label="CAGR" value={pct(bt.cagr)} tone={bt.cagr >= 0 ? 'up' : 'down'} />
+                <Metric label="MDD" value={pct(bt.maxDrawdown)} tone="down" />
+                <Metric label="Sharpe" value={bt.sharpe == null ? '–' : String(bt.sharpe)} />
+                <Metric label="지수B&H" value={pct(bt.indexBuyHold)} />
+                <Metric label="투자비중" value={pct(bt.pctInvested)} />
+              </div>
+            ) : <StatusBadge status="not_available" message={bt.reason || '백테스트 불가'} />)}
+            {bt?.ok && <div className="strat-bt-note">{bt.note}</div>}
           </div>
         </>
       ) : (
@@ -3058,15 +3198,14 @@ function AutoSettingsForm({ authHeaders, onSeedReset }: { authHeaders: any; onSe
           </label>
           <label className="auto-field">
             <span>자동 엔진 <small>(동시 1개만)</small></span>
-            <select value={brokerSel === 'kis_mock' ? 'legacy' : engineSel} disabled={brokerSel === 'kis_mock'}
-              onChange={(e) => setEngineSel(e.target.value)}>
+            <select value={engineSel} onChange={(e) => setEngineSel(e.target.value)}>
               <option value="builder">전략 빌더 (사용자 조건)</option>
               <option value="legacy">자동전략 (모멘텀+랭킹)</option>
             </select>
           </label>
         </div>
         <small className="auto-hint">
-          엔진은 한 번에 하나만 계좌를 움직입니다(레이스 방지). KIS 모의 = 자동전략 엔진 전용(전략 빌더는 내부 시뮬). 활성: <b>{cfg.activeEngine}</b>
+          엔진은 한 번에 하나만 계좌를 움직입니다(레이스 방지). 두 엔진 모두 체결방식(내부/KIS)을 따릅니다. 활성: <b>{cfg.activeEngine}</b> · 체결: <b>{brokerSel === 'kis_mock' ? 'KIS 모의' : '내부 시뮬'}</b>
         </small>
         <small className="auto-hint">
           {brokerSel === 'kis_mock'

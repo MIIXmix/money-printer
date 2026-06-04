@@ -806,9 +806,11 @@ def strategies_autorun_get(user: dict[str, Any] = Depends(require_auth)) -> dict
         "intervalSec": int(raw.get("strategy_interval_sec") or 300),
         "enabledStrategies": len(auto_store.enabled_strategies(uid)),
         "brokerMode": mode,
-        "builderSupported": mode != "kis_mock",  # KIS 모드에선 전략 빌더 미지원(내부 sim 전용)
+        "builderSupported": True,  # 전략 빌더는 내부 sim·KIS 모두 지원
         "activeEngine": auto_service.active_engine(uid),
-        "note": "자동 실행은 이 앱(로컬)이 떠 있는 동안만 · 정규장 시간 · 활성 엔진 1개만. 전략 빌더는 내부 시뮬 전용.",
+        "note": ("자동 실행은 앱이 떠 있는 동안 · 정규장 시간 · 활성 엔진 1개만. "
+                 + ("현재 체결방식=KIS 모의 → 전략 주문이 KIS로 전송됩니다." if mode == "kis_mock"
+                    else "현재 체결방식=내부 시뮬.")),
     }
 
 

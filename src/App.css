@@ -613,6 +613,15 @@ button {
 
 .strat-bt-mini { color: var(--cyan); }
 
+.strat-card.rotation { border-color: var(--cyan); background: color-mix(in srgb, var(--cyan) 7%, var(--panel-2)); }
+.strat-gtaa-btn { border-color: var(--cyan); color: var(--cyan); font-weight: 600; }
+.gtaa-promo { border: 1px solid var(--cyan); border-radius: 5px; padding: 8px; margin-bottom: 8px;
+  background: color-mix(in srgb, var(--cyan) 6%, transparent); }
+.gtaa-promo h4 { margin: 0 0 4px; }
+.universe-text { width: 100%; resize: vertical; font-family: inherit; font-size: 12px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line-soft);
+  border-radius: 4px; padding: 6px; box-sizing: border-box; }
+
 .strat-run-bar {
   display: flex;
   align-items: center;
