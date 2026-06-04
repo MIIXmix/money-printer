@@ -14,6 +14,17 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(BASE_DIR / ".env")
 
 
+def _resolve_path(env_var: str, default: Path) -> Path:
+    """경로 환경변수를 절대경로로 해석한다.
+
+    상대경로(.env가 'DATABASE_PATH=.data/...' 처럼 줄 때)는 실행 cwd가 아니라
+    항상 BASE_DIR(저장소 루트) 기준으로 고정한다 — cwd에 따라 DB 파일이 갈리는 footgun 방지.
+    """
+    raw = os.getenv(env_var)
+    p = Path(raw) if raw else default
+    return p if p.is_absolute() else (BASE_DIR / p).resolve()
+
+
 # Known weak/placeholder values that must never be used as a real secret.
 _PLACEHOLDER_SECRETS = {
     "",
@@ -25,7 +36,7 @@ _PLACEHOLDER_SECRETS = {
 
 
 def _data_dir() -> Path:
-    return Path(os.getenv("DATABASE_PATH", BASE_DIR / ".data" / "terminal.db")).parent
+    return _resolve_path("DATABASE_PATH", BASE_DIR / ".data" / "terminal.db").parent
 
 
 def _restrict_permissions(path: Path) -> None:
@@ -89,7 +100,7 @@ _APP_SECRET = _load_or_create_secret()
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "Korean Finance Terminal"
-    database_path: Path = Path(os.getenv("DATABASE_PATH", BASE_DIR / ".data" / "terminal.db"))
+    database_path: Path = _resolve_path("DATABASE_PATH", BASE_DIR / ".data" / "terminal.db")
     # Auto-generated strong secret (never a shipped placeholder).
     app_secret: str = _APP_SECRET
     token_ttl_minutes: int = int(os.getenv("TOKEN_TTL_MINUTES", "240"))
@@ -108,7 +119,7 @@ class Settings:
         "KoreanFinanceTerminal/0.1 admin@example.com",
     )
     live_trading_enabled: bool = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
-    static_dir: Path = Path(os.getenv("STATIC_DIR", BASE_DIR / "dist"))
+    static_dir: Path = _resolve_path("STATIC_DIR", BASE_DIR / "dist")
 
 
 settings = Settings()
