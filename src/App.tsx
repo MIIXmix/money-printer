@@ -183,6 +183,8 @@ const GUEST_BLOCKED_WIDGETS = new Set<string>([
 
 const defaultLayout: LayoutState = {
   panels: { left: 260, right: 360 },
+  // 모든 위젯에 결정적 고정높이 — 첫 렌더부터 고정되어 데이터 로드 시 높이 변동(settle)이 없다.
+  // 내용이 넘치면 위젯 내부에서 스크롤. 사용자는 우하단 핸들로 직접 높이 조절 가능.
   widgetHeights: {
     chart: 640,
     heatmap: 680,
@@ -194,6 +196,27 @@ const defaultLayout: LayoutState = {
     fxRates: 196,
     multiChartGrid: 960,
     autoStrategy: 760,
+    favorites: 190,
+    marketPulse: 210,
+    watchGrid: 230,
+    sectorMap: 250,
+    flowRadar: 230,
+    symbolHeader: 150,
+    riskEngine: 210,
+    filings: 250,
+    earnings: 250,
+    monitorGrid: 380,
+    dataStatus: 210,
+    portfolioRisk: 300,
+    manualPortfolio: 380,
+    manualRisk: 250,
+    optionsFlow: 340,
+    brokerStatus: 230,
+    paperOrdersPolicy: 220,
+    strategyBuilder: 560,
+    portfolioControls: 380,
+    chartControls: 250,
+    indicatorStack: 250,
   },
   tabs: {
     markets: {
@@ -998,16 +1021,18 @@ function WidgetShell(props: {
     if (!ref.current || !('ResizeObserver' in window)) return
     const observer = new ResizeObserver((entries) => {
       const height = entries[0]?.contentRect.height
-      if (height) props.onHeight(props.id, height)
+      // 사용자가 핸들로 의미있게 리사이즈한 경우에만 저장. border-box -2px 피드백은
+      // 임계값으로 무시 → 위젯 높이 드리프트/settle 방지(고정높이 유지).
+      if (height && Math.abs(height - (props.height || 240)) > 6) props.onHeight(props.id, height)
     })
     observer.observe(ref.current)
     return () => observer.disconnect()
-  }, [props])
+  }, [props.id, props.height, props.onHeight])
   return (
     <article
       ref={ref}
       className="widget"
-      style={{ height: props.height ? `${props.height}px` : undefined }}
+      style={{ height: `${props.height || 240}px` }}
       draggable
       onDragStart={() => props.setDragWidget(props.id)}
       onDragEnd={() => props.setDragWidget(null)}
